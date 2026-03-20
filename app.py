@@ -1,5 +1,6 @@
 import io
 import math
+import os
 from typing import List, Tuple
 
 import numpy as np
@@ -90,9 +91,18 @@ def _result_to_payload(result, img_w: int, img_h: int):
     }
 
 
+def _health_payload():
+    return {"ok": True, "model": MODEL_PATH, "car_class_ids": CAR_CLASS_IDS}
+
+
+@app.get("/ping")
+def ping():
+    return {"status": "healthy"}
+
+
 @app.get("/health")
 def health():
-    return {"ok": True, "model": MODEL_PATH, "car_class_ids": CAR_CLASS_IDS}
+    return _health_payload()
 
 
 @app.post("/detect")
@@ -183,3 +193,10 @@ async def detect_batch(
             }
 
     return {"count": len(responses), "items": responses}
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    port = int(os.getenv("PORT", "8000"))
+    uvicorn.run(app, host="0.0.0.0", port=port)
