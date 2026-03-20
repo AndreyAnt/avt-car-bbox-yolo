@@ -1,10 +1,11 @@
+import base64
 import io
 import math
 import os
 from typing import List, Tuple
 
 import numpy as np
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageDraw, UnidentifiedImageError
 from fastapi import FastAPI, UploadFile, File, Query, HTTPException
 from ultralytics import YOLO
 
@@ -91,6 +92,19 @@ def _result_to_payload(result, img_w: int, img_h: int):
     }
 
 
+def _draw_bbox_image_base64(img_array: np.ndarray, bbox_xyxy) -> str:
+    image = Image.fromarray(img_array)
+
+    if bbox_xyxy is not None:
+        draw = ImageDraw.Draw(image)
+        line_width = max(4, min(image.size) // 250)
+        draw.rectangle(tuple(bbox_xyxy), outline=(255, 0, 0), width=line_width)
+
+    output = io.BytesIO()
+    image.save(output, format="JPEG", quality=90)
+    return base64.b64encode(output.getvalue()).decode("ascii")
+
+
 def _health_payload():
     return {"ok": True, "model": MODEL_PATH, "car_class_ids": CAR_CLASS_IDS}
 
@@ -105,11 +119,36 @@ def health():
     return _health_payload()
 
 
+def _build_detection_response(
+    filename: str,
+    img_array: np.ndarray,
+    img_w: int,
+    img_h: int,
+    result,
+    draw_output: bool,
+):
+    payload = {
+        "filename": filename,
+        "image_size": {"w": img_w, "h": img_h},
+        **_result_to_payload(result, img_w, img_h),
+    }
+
+    if draw_output:
+        payload["output_image_mime_type"] = "image/jpeg"
+        payload["output_image_base64"] = _draw_bbox_image_base64(
+            img_array,
+            payload["bbox_xyxy"],
+        )
+
+    return payload
+
+
 @app.post("/detect")
 async def detect(
     file: UploadFile = File(...),
     conf: float = Query(0.25, ge=0.0, le=1.0),
     imgsz: int = Query(640, ge=320, le=1920),
+    draw_output: bool = Query(False),
 ):
     try:
         img_array, img_w, img_h = await _load_upload_image(file)
@@ -125,10 +164,14 @@ async def detect(
         verbose=False,
     )
 
-    return {
-        "image_size": {"w": img_w, "h": img_h},
-        **_result_to_payload(results[0], img_w, img_h),
-    }
+    return _build_detection_response(
+        file.filename,
+        img_array,
+        img_w,
+        img_h,
+        results[0],
+        draw_output,
+    )
 
 
 @app.post("/detect-batch")
@@ -137,6 +180,7 @@ async def detect_batch(
     conf: float = Query(0.25, ge=0.0, le=1.0),
     imgsz: int = Query(640, ge=320, le=1920),
     chunk_size: int = Query(8, ge=1, le=32),
+    draw_output: bool = Query(False),
 ):
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded")
@@ -169,6 +213,7 @@ async def detect_batch(
                 {
                     "response_index": idx,
                     "filename": upload.filename,
+                    "img_array": img_array,
                     "w": img_w,
                     "h": img_h,
                 }
@@ -186,11 +231,14 @@ async def detect_batch(
         )
 
         for meta, result in zip(chunk_meta, results):
-            responses[meta["response_index"]] = {
-                "filename": meta["filename"],
-                "image_size": {"w": meta["w"], "h": meta["h"]},
-                **_result_to_payload(result, meta["w"], meta["h"]),
-            }
+            responses[meta["response_index"]] = _build_detection_response(
+                meta["filename"],
+                meta["img_array"],
+                meta["w"],
+                meta["h"],
+                result,
+                draw_output,
+            )
 
     return {"count": len(responses), "items": responses}
 
