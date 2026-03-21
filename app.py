@@ -10,6 +10,7 @@ from fastapi import FastAPI, UploadFile, File, Query, HTTPException
 from ultralytics import YOLO
 
 app = FastAPI()
+app.state.model_ready = False
 
 # Choose speed vs accuracy:
 # - yolov8n.pt: fastest
@@ -106,11 +107,33 @@ def _draw_bbox_image_base64(img_array: np.ndarray, bbox_xyxy) -> str:
 
 
 def _health_payload():
-    return {"ok": True, "model": MODEL_PATH, "car_class_ids": CAR_CLASS_IDS}
+    return {
+        "ok": app.state.model_ready,
+        "model_ready": app.state.model_ready,
+        "model": MODEL_PATH,
+        "car_class_ids": CAR_CLASS_IDS,
+    }
+
+
+@app.on_event("startup")
+def warm_up_model():
+    # Warm a tiny inference before the worker starts taking traffic. This reduces
+    # first-request latency spikes and helps Runpod only route to actually-ready workers.
+    warmup_image = np.zeros((640, 640, 3), dtype=np.uint8)
+    model.predict(
+        source=warmup_image,
+        conf=0.25,
+        imgsz=640,
+        classes=CAR_CLASS_IDS,
+        verbose=False,
+    )
+    app.state.model_ready = True
 
 
 @app.get("/ping")
 def ping():
+    if not app.state.model_ready:
+        raise HTTPException(status_code=503, detail="Model warming up")
     return {"status": "healthy"}
 
 
