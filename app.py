@@ -1,11 +1,12 @@
 import base64
 import io
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 from PIL import Image, ImageDraw, UnidentifiedImageError
-from fastapi import FastAPI, UploadFile, File, Query, HTTPException
+from fastapi import Depends, FastAPI, UploadFile, File, Query, HTTPException
+from pydantic import BaseModel, ConfigDict, Field
 from ultralytics import YOLO
 
 from car_detection_logic import (
@@ -16,14 +17,24 @@ from car_detection_logic import (
     _select_verified_rolled_candidate,
 )
 
-app = FastAPI()
-app.state.model_ready = False
-
 # Choose speed vs accuracy:
 # - yolov8n.pt: fastest
 # - yolov8s.pt: still fast, better accuracy
 APP_VERSION = "0.1.15"
 MODEL_PATH = "yolov8n.pt"
+MAX_BATCH_FILES = 100
+
+app = FastAPI(
+    title="AVT Car Bounding Box YOLO API",
+    description=(
+        "Detects the main car bounding box in regular and 360 panorama vehicle "
+        "photos. Horizontal panorama seam boxes are represented with `wraps_x=true` "
+        "and may return `bbox_xyxy[2] < bbox_xyxy[0]`."
+    ),
+    version=APP_VERSION,
+)
+app.state.model_ready = False
+
 model = YOLO(MODEL_PATH)
 
 # Find class id(s) for "car" if present
@@ -32,7 +43,261 @@ CAR_CLASS_IDS: List[int] = [i for i, name in model.names.items() if name == "car
 if not CAR_CLASS_IDS:
     CAR_CLASS_IDS = [2]
 
-MAX_BATCH_FILES = 100
+
+class ImageSizeResponse(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "w": 6080,
+                    "h": 3040,
+                }
+            ]
+        }
+    )
+
+    w: int = Field(..., description="Image width in pixels.", examples=[6080])
+    h: int = Field(..., description="Image height in pixels.", examples=[3040])
+
+
+class PingResponse(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "status": "healthy",
+                }
+            ]
+        }
+    )
+
+    status: str = Field(..., description="Worker readiness status.", examples=["healthy"])
+
+
+class HealthResponse(BaseModel):
+    model_config = ConfigDict(
+        protected_namespaces=(),
+        json_schema_extra={
+            "examples": [
+                {
+                    "ok": True,
+                    "model_ready": True,
+                    "app_version": APP_VERSION,
+                    "model": MODEL_PATH,
+                    "car_class_ids": [2],
+                }
+            ]
+        }
+    )
+
+    ok: bool = Field(..., description="True when the model has warmed up and the worker can serve traffic.")
+    model_ready: bool = Field(..., description="True after the startup warm-up inference succeeds.")
+    app_version: str = Field(..., description="Application version served by this container.", examples=[APP_VERSION])
+    model: str = Field(..., description="YOLO model weights path or name.", examples=[MODEL_PATH])
+    car_class_ids: List[int] = Field(..., description="YOLO class ids considered to be cars.", examples=[[2]])
+
+
+class DetectionOptions(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "conf": 0.25,
+                    "imgsz": 640,
+                    "max_det": 300,
+                    "candidate_limit": 10,
+                    "draw_output": False,
+                    "draw_suggestions": False,
+                    "roll_verify": True,
+                }
+            ]
+        }
+    )
+
+    conf: float = Field(
+        0.25,
+        ge=0.0,
+        le=1.0,
+        description="Minimum YOLO confidence threshold for car detections.",
+        examples=[0.25],
+    )
+    imgsz: int = Field(
+        640,
+        ge=320,
+        le=1920,
+        description="YOLO inference image size. Larger values can improve small-car detection at higher cost.",
+        examples=[640],
+    )
+    max_det: int = Field(
+        300,
+        ge=1,
+        le=1000,
+        description="Maximum number of raw YOLO detections to keep before app-level ranking.",
+        examples=[300],
+    )
+    candidate_limit: int = Field(
+        10,
+        ge=0,
+        le=100,
+        description="Maximum number of suggestion boxes to draw when `draw_suggestions=true`.",
+        examples=[10],
+    )
+    draw_output: bool = Field(
+        False,
+        description="When true, include a JPEG with the selected bbox drawn over the input image.",
+        examples=[False],
+    )
+    draw_suggestions: bool = Field(
+        False,
+        description="When true and `draw_output=true`, draw candidate suggestion boxes as well.",
+        examples=[False],
+    )
+    roll_verify: bool = Field(
+        True,
+        description=(
+            "When true, rerun detection on a half-rolled panorama if first-pass "
+            "detections touch the horizontal seam edges."
+        ),
+        examples=[True],
+    )
+
+
+class BatchDetectionOptions(DetectionOptions):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "conf": 0.25,
+                    "imgsz": 640,
+                    "max_det": 300,
+                    "candidate_limit": 10,
+                    "chunk_size": 8,
+                    "draw_output": False,
+                    "draw_suggestions": False,
+                    "roll_verify": True,
+                }
+            ]
+        }
+    )
+
+    chunk_size: int = Field(
+        8,
+        ge=1,
+        le=32,
+        description="Number of uploaded images to send to YOLO in one batch inference call.",
+        examples=[8],
+    )
+
+
+class DetectionResponse(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "filename": "b04.jpg",
+                    "image_size": {"w": 6080, "h": 3040},
+                    "app_version": APP_VERSION,
+                    "bbox_xyxy": [
+                        5503.612548828125,
+                        1325.8834228515625,
+                        850.34619140625,
+                        2058.998291015625,
+                    ],
+                    "confidence": 0.8547395467758179,
+                    "wraps_x": True,
+                },
+                {
+                    "filename": "empty-parking.jpg",
+                    "image_size": {"w": 1920, "h": 960},
+                    "app_version": APP_VERSION,
+                    "bbox_xyxy": None,
+                    "confidence": None,
+                    "wraps_x": False,
+                },
+            ]
+        }
+    )
+
+    filename: Optional[str] = Field(None, description="Original uploaded filename.", examples=["b04.jpg"])
+    image_size: ImageSizeResponse = Field(..., description="Decoded input image size.")
+    app_version: str = Field(..., description="Application version served by this container.", examples=[APP_VERSION])
+    bbox_xyxy: Optional[List[float]] = Field(
+        None,
+        description=(
+            "Selected main-car bbox as `[xMin, yMin, xMax, yMax]` pixel coordinates. "
+            "If `wraps_x=true`, the bbox crosses the panorama seam and `xMax` may be less than `xMin`."
+        ),
+        examples=[[5503.612548828125, 1325.8834228515625, 850.34619140625, 2058.998291015625]],
+    )
+    confidence: Optional[float] = Field(
+        None,
+        description="YOLO confidence for the selected detection, or null when no car is detected.",
+        examples=[0.8547395467758179],
+    )
+    wraps_x: bool = Field(..., description="True when the returned bbox crosses the horizontal panorama seam.")
+    output_image_mime_type: Optional[str] = Field(
+        None,
+        description="MIME type for `output_image_base64`; present only when `draw_output=true`.",
+        examples=["image/jpeg"],
+    )
+    output_image_base64: Optional[str] = Field(
+        None,
+        description="Base64 JPEG with detection overlays; present only when `draw_output=true`.",
+        examples=["/9j/4AAQSkZJRgABAQAAAQABAAD..."],
+    )
+
+
+class DetectionErrorResponse(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "filename": "broken.jpg",
+                    "error": "Invalid image file",
+                }
+            ]
+        }
+    )
+
+    filename: Optional[str] = Field(None, description="Original uploaded filename when available.")
+    error: str = Field(..., description="Per-file validation error message.")
+
+
+class BatchDetectionResponse(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "count": 2,
+                    "items": [
+                        {
+                            "filename": "b04.jpg",
+                            "image_size": {"w": 6080, "h": 3040},
+                            "app_version": APP_VERSION,
+                            "bbox_xyxy": [
+                                5503.612548828125,
+                                1325.8834228515625,
+                                850.34619140625,
+                                2058.998291015625,
+                            ],
+                            "confidence": 0.8547395467758179,
+                            "wraps_x": True,
+                        },
+                        {
+                            "filename": "broken.jpg",
+                            "error": "Invalid image file",
+                        },
+                    ],
+                }
+            ]
+        }
+    )
+
+    count: int = Field(..., description="Number of uploaded files represented in `items`.")
+    items: List[Union[DetectionResponse, DetectionErrorResponse]] = Field(
+        ...,
+        description="Detection results in upload order. Invalid files return an error item.",
+    )
 
 
 def _decode_image_bytes(data: bytes) -> Tuple[np.ndarray, int, int]:
@@ -168,6 +433,132 @@ def _health_payload():
     }
 
 
+def _detection_options(
+    conf: float = Query(
+        0.25,
+        ge=0.0,
+        le=1.0,
+        description="Minimum YOLO confidence threshold for car detections.",
+        examples=[0.25],
+    ),
+    imgsz: int = Query(
+        640,
+        ge=320,
+        le=1920,
+        description="YOLO inference image size. Larger values can improve small-car detection at higher cost.",
+        examples=[640],
+    ),
+    max_det: int = Query(
+        300,
+        ge=1,
+        le=1000,
+        description="Maximum number of raw YOLO detections to keep before app-level ranking.",
+        examples=[300],
+    ),
+    candidate_limit: int = Query(
+        10,
+        ge=0,
+        le=100,
+        description="Maximum number of suggestion boxes to draw when `draw_suggestions=true`.",
+        examples=[10],
+    ),
+    draw_output: bool = Query(
+        False,
+        description="When true, include a JPEG with the selected bbox drawn over the input image.",
+        examples=[False],
+    ),
+    draw_suggestions: bool = Query(
+        False,
+        description="When true and `draw_output=true`, draw candidate suggestion boxes as well.",
+        examples=[False],
+    ),
+    roll_verify: bool = Query(
+        True,
+        description=(
+            "When true, rerun detection on a half-rolled panorama if first-pass "
+            "detections touch the horizontal seam edges."
+        ),
+        examples=[True],
+    ),
+) -> DetectionOptions:
+    return DetectionOptions(
+        conf=conf,
+        imgsz=imgsz,
+        max_det=max_det,
+        candidate_limit=candidate_limit,
+        draw_output=draw_output,
+        draw_suggestions=draw_suggestions,
+        roll_verify=roll_verify,
+    )
+
+
+def _batch_detection_options(
+    conf: float = Query(
+        0.25,
+        ge=0.0,
+        le=1.0,
+        description="Minimum YOLO confidence threshold for car detections.",
+        examples=[0.25],
+    ),
+    imgsz: int = Query(
+        640,
+        ge=320,
+        le=1920,
+        description="YOLO inference image size. Larger values can improve small-car detection at higher cost.",
+        examples=[640],
+    ),
+    max_det: int = Query(
+        300,
+        ge=1,
+        le=1000,
+        description="Maximum number of raw YOLO detections to keep before app-level ranking.",
+        examples=[300],
+    ),
+    candidate_limit: int = Query(
+        10,
+        ge=0,
+        le=100,
+        description="Maximum number of suggestion boxes to draw when `draw_suggestions=true`.",
+        examples=[10],
+    ),
+    chunk_size: int = Query(
+        8,
+        ge=1,
+        le=32,
+        description="Number of uploaded images to send to YOLO in one batch inference call.",
+        examples=[8],
+    ),
+    draw_output: bool = Query(
+        False,
+        description="When true, include a JPEG with the selected bbox drawn over the input image.",
+        examples=[False],
+    ),
+    draw_suggestions: bool = Query(
+        False,
+        description="When true and `draw_output=true`, draw candidate suggestion boxes as well.",
+        examples=[False],
+    ),
+    roll_verify: bool = Query(
+        True,
+        description=(
+            "When true, rerun detection on a half-rolled panorama if first-pass "
+            "detections touch the horizontal seam edges."
+        ),
+        examples=[True],
+    ),
+) -> BatchDetectionOptions:
+    return BatchDetectionOptions(
+        conf=conf,
+        imgsz=imgsz,
+        max_det=max_det,
+        candidate_limit=candidate_limit,
+        chunk_size=chunk_size,
+        draw_output=draw_output,
+        draw_suggestions=draw_suggestions,
+        roll_verify=roll_verify,
+    )
+
+
 @app.on_event("startup")
 def warm_up_model():
     # Warm a tiny inference before the worker starts taking traffic. This reduces
@@ -183,20 +574,40 @@ def warm_up_model():
     app.state.model_ready = True
 
 
-@app.get("/ping")
+@app.get(
+    "/ping",
+    response_model=PingResponse,
+    tags=["Health"],
+    summary="Check worker readiness",
+    responses={
+        503: {
+            "description": "Model is still warming up.",
+            "content": {
+                "application/json": {
+                    "example": {"detail": "Model warming up"},
+                }
+            },
+        }
+    },
+)
 def ping():
     if not app.state.model_ready:
         raise HTTPException(status_code=503, detail="Model warming up")
     return {"status": "healthy"}
 
 
-@app.get("/health")
+@app.get(
+    "/health",
+    response_model=HealthResponse,
+    tags=["Health"],
+    summary="Return model and container health metadata",
+)
 def health():
     return _health_payload()
 
 
 def _build_detection_response(
-    filename: str,
+    filename: Optional[str],
     img_array: np.ndarray,
     img_w: int,
     img_h: int,
@@ -247,16 +658,37 @@ def _build_detection_response(
     return payload
 
 
-@app.post("/detect")
+@app.post(
+    "/detect",
+    response_model=DetectionResponse,
+    response_model_exclude_unset=True,
+    tags=["Detection"],
+    summary="Detect the main car in one image",
+    description=(
+        "Accepts one uploaded image, runs YOLO car detection, ranks detections "
+        "by visible area, and optionally verifies seam-wrapped cars by rerunning "
+        "detection on a half-rolled panorama."
+    ),
+    responses={
+        400: {
+            "description": "The uploaded file is empty or is not a valid image.",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "empty": {"value": {"detail": "Empty file"}},
+                        "invalid": {"value": {"detail": "Invalid image file"}},
+                    }
+                }
+            },
+        }
+    },
+)
 async def detect(
-    file: UploadFile = File(...),
-    conf: float = Query(0.25, ge=0.0, le=1.0),
-    imgsz: int = Query(640, ge=320, le=1920),
-    max_det: int = Query(300, ge=1, le=1000),
-    candidate_limit: int = Query(10, ge=0, le=100),
-    draw_output: bool = Query(False),
-    draw_suggestions: bool = Query(False),
-    roll_verify: bool = Query(True),
+    options: DetectionOptions = Depends(_detection_options),
+    file: UploadFile = File(
+        ...,
+        description="Input vehicle image. JPEG and PNG are supported by Pillow decoding.",
+    ),
 ):
     try:
         img_array, img_w, img_h = await _load_upload_image(file)
@@ -264,7 +696,7 @@ async def detect(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # Run inference. Setting classes speeds up and reduces false positives.
-    result = _predict_car_result(img_array, conf, imgsz, max_det)
+    result = _predict_car_result(img_array, options.conf, options.imgsz, options.max_det)
 
     return _build_detection_response(
         file.filename,
@@ -272,27 +704,47 @@ async def detect(
         img_w,
         img_h,
         result,
-        draw_output,
-        candidate_limit,
-        draw_suggestions,
-        roll_verify,
-        conf,
-        imgsz,
-        max_det,
+        options.draw_output,
+        options.candidate_limit,
+        options.draw_suggestions,
+        options.roll_verify,
+        options.conf,
+        options.imgsz,
+        options.max_det,
     )
 
 
-@app.post("/detect-batch")
+@app.post(
+    "/detect-batch",
+    response_model=BatchDetectionResponse,
+    response_model_exclude_unset=True,
+    tags=["Detection"],
+    summary="Detect the main car in multiple images",
+    description=(
+        "Accepts multiple uploaded images and returns one item per file in upload "
+        "order. Invalid files are reported as per-file error items while valid "
+        "files continue through YOLO inference."
+    ),
+    responses={
+        400: {
+            "description": "No files were uploaded or the batch exceeded the configured limit.",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "none": {"value": {"detail": "No files uploaded"}},
+                        "too_many": {"value": {"detail": f"Too many files; max {MAX_BATCH_FILES}"}},
+                    }
+                }
+            },
+        }
+    },
+)
 async def detect_batch(
-    files: List[UploadFile] = File(...),
-    conf: float = Query(0.25, ge=0.0, le=1.0),
-    imgsz: int = Query(640, ge=320, le=1920),
-    max_det: int = Query(300, ge=1, le=1000),
-    candidate_limit: int = Query(10, ge=0, le=100),
-    chunk_size: int = Query(8, ge=1, le=32),
-    draw_output: bool = Query(False),
-    draw_suggestions: bool = Query(False),
-    roll_verify: bool = Query(True),
+    options: BatchDetectionOptions = Depends(_batch_detection_options),
+    files: List[UploadFile] = File(
+        ...,
+        description=f"Input vehicle images. Up to {MAX_BATCH_FILES} files are accepted.",
+    ),
 ):
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded")
@@ -305,8 +757,8 @@ async def detect_batch(
 
     responses = [None] * len(files)
 
-    for start in range(0, len(files), chunk_size):
-        chunk_files = files[start : start + chunk_size]
+    for start in range(0, len(files), options.chunk_size):
+        chunk_files = files[start : start + options.chunk_size]
         chunk_arrays = []
         chunk_meta = []
 
@@ -336,9 +788,9 @@ async def detect_batch(
 
         results = model.predict(
             source=chunk_arrays,
-            conf=conf,
-            imgsz=imgsz,
-            max_det=max_det,
+            conf=options.conf,
+            imgsz=options.imgsz,
+            max_det=options.max_det,
             classes=CAR_CLASS_IDS,
             verbose=False,
         )
@@ -350,13 +802,13 @@ async def detect_batch(
                 meta["w"],
                 meta["h"],
                 result,
-                draw_output,
-                candidate_limit,
-                draw_suggestions,
-                roll_verify,
-                conf,
-                imgsz,
-                max_det,
+                options.draw_output,
+                options.candidate_limit,
+                options.draw_suggestions,
+                options.roll_verify,
+                options.conf,
+                options.imgsz,
+                options.max_det,
             )
 
     return {"count": len(responses), "items": responses}
