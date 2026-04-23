@@ -14,8 +14,19 @@ venv/
 .mypy_cache/
 .ruff_cache/
 htmlcov/
+.coverage
+.coverage.*
 
 .env
 .env.*
+
+tests/
+examples/
+README.md
+requirements-test.txt
+requirements-dev.txt
+pyproject.toml
+.tool-versions
+.python-version
 
 output/

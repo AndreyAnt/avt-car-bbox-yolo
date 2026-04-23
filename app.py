@@ -20,7 +20,7 @@ from car_detection_logic import (
 # Choose speed vs accuracy:
 # - yolov8n.pt: fastest
 # - yolov8s.pt: still fast, better accuracy
-APP_VERSION = "0.1.15"
+APP_VERSION = "0.1.16"
 MODEL_PATH = "yolov8n.pt"
 MAX_BATCH_FILES = 100
 
