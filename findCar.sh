@@ -41,11 +41,17 @@ base_url=${RUNPOD_BASE_URL%/}
 timeout_seconds=${RUNPOD_WARMUP_TIMEOUT_SECONDS:-180}
 poll_interval=${RUNPOD_POLL_INTERVAL_SECONDS:-2}
 ping_max_time=${RUNPOD_PING_MAX_TIME_SECONDS:-10}
+candidate_limit=${RUNPOD_CANDIDATE_LIMIT:-10}
+draw_suggestions=${RUNPOD_DRAW_SUGGESTIONS:-false}
+max_det=${RUNPOD_MAX_DET:-300}
+roll_verify=${RUNPOD_ROLL_VERIFY:-true}
 
 input_filename=${input_image:t}
 input_stem=${input_filename:r}
 output_path=${2:-"$PWD/${input_stem}_output.jpg"}
 output_path=${output_path:A}
+json_output_path=${RUNPOD_JSON_OUTPUT_PATH:-"$PWD/${input_stem}_response.json"}
+json_output_path=${json_output_path:A}
 
 tmp_json=$(mktemp)
 cleanup() {
@@ -92,13 +98,16 @@ while true; do
 done
 
 print "Worker is ready. Sending $input_filename for detection."
+print "Detection options: candidate_limit=$candidate_limit draw_suggestions=$draw_suggestions max_det=$max_det roll_verify=$roll_verify"
+
+detect_url="$base_url/detect?draw_output=true&candidate_limit=$candidate_limit&draw_suggestions=$draw_suggestions&max_det=$max_det&roll_verify=$roll_verify"
 
 curl_metrics=$(
   curl --http1.1 -sS -H "Expect:" \
     -o "$tmp_json" \
     -w "code=%{http_code} starttransfer=%{time_starttransfer}s total=%{time_total}s size_download=%{size_download}B" \
     -H "Authorization: Bearer $RUNPOD_API_KEY" \
-    -X POST "$base_url/detect?draw_output=true" \
+    -X POST "$detect_url" \
     -F "file=@$input_image"
 )
 
@@ -132,3 +141,5 @@ print(output_path)
 PY
 
 print "Saved output image to $output_path"
+cp "$tmp_json" "$json_output_path"
+print "Saved response JSON to $json_output_path"
