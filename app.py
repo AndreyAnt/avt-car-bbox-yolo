@@ -8,6 +8,14 @@ from PIL import Image, ImageDraw, UnidentifiedImageError
 from fastapi import FastAPI, UploadFile, File, Query, HTTPException
 from ultralytics import YOLO
 
+from car_detection_logic import (
+    _bbox_metrics,
+    _candidate_payload,
+    _find_seam_edge_candidates,
+    _rank_car_candidates_xyxy,
+    _select_verified_rolled_candidate,
+)
+
 app = FastAPI()
 app.state.model_ready = False
 
@@ -25,197 +33,6 @@ if not CAR_CLASS_IDS:
     CAR_CLASS_IDS = [2]
 
 MAX_BATCH_FILES = 100
-SEAM_EDGE_FRACTION = 0.03
-SEAM_MIN_EDGE_AREA_FRACTION = 0.004
-SEAM_MIN_HORIZONTAL_OVERLAP = 0.35
-SEAM_MIN_VERTICAL_OVERLAP = 0.45
-
-
-def _clamp(value: float, low: float, high: float) -> float:
-    return max(low, min(high, value))
-
-
-def _bbox_metrics(
-    x1: float,
-    y1: float,
-    x2: float,
-    y2: float,
-    img_w: int,
-    img_h: int,
-) -> Dict[str, Any]:
-    x1c = _clamp(x1, 0.0, float(img_w))
-    x2c = _clamp(x2, 0.0, float(img_w))
-    y1c = _clamp(y1, 0.0, float(img_h))
-    y2c = _clamp(y2, 0.0, float(img_h))
-
-    wraps_x = x2c < x1c
-    if wraps_x:
-        width = max(0.0, float(img_w) - x1c) + max(0.0, x2c)
-        cx = (x1c + width / 2.0) % float(img_w) if img_w > 0 else 0.0
-    else:
-        width = max(0.0, x2c - x1c)
-        cx = (x1c + x2c) / 2.0
-
-    height = max(0.0, y2c - y1c)
-    cy = (y1c + y2c) / 2.0
-    area = width * height
-
-    return {
-        "area": area,
-        "width": width,
-        "height": height,
-        "center_xy": [cx, cy],
-        "wraps_x": wraps_x,
-    }
-
-
-def _rank_car_candidates_xyxy(
-    boxes_xyxy: np.ndarray,
-    confs: np.ndarray,
-    img_w: int,
-    img_h: int,
-) -> List[Tuple[int, float]]:
-    """Rank car detections by visible area; confidence only breaks exact ties."""
-    ranked = []
-    for i, (x1, y1, x2, y2) in enumerate(boxes_xyxy):
-        metrics = _bbox_metrics(
-            float(x1),
-            float(y1),
-            float(x2),
-            float(y2),
-            img_w,
-            img_h,
-        )
-        ranked.append((i, float(metrics["area"])))
-
-    return sorted(
-        ranked,
-        key=lambda item: (item[1], float(confs[item[0]])),
-        reverse=True,
-    )
-
-
-def _pick_main_car_xyxy(
-    boxes_xyxy: np.ndarray,
-    confs: np.ndarray,
-    img_w: int,
-    img_h: int,
-) -> Tuple[int, float]:
-    ranked = _rank_car_candidates_xyxy(boxes_xyxy, confs, img_w, img_h)
-    best_i = ranked[0][0]
-    return best_i, float(confs[best_i])
-
-
-def _vertical_overlap_ratio(a_bbox, b_bbox) -> float:
-    a_y1, a_y2 = float(a_bbox[1]), float(a_bbox[3])
-    b_y1, b_y2 = float(b_bbox[1]), float(b_bbox[3])
-    overlap = max(0.0, min(a_y2, b_y2) - max(a_y1, b_y1))
-    min_height = min(max(0.0, a_y2 - a_y1), max(0.0, b_y2 - b_y1))
-    if min_height <= 0.0:
-        return 0.0
-    return overlap / min_height
-
-
-def _horizontal_segments(bbox, img_w: int) -> List[Tuple[float, float]]:
-    x1 = _clamp(float(bbox[0]), 0.0, float(img_w))
-    x2 = _clamp(float(bbox[2]), 0.0, float(img_w))
-
-    if x2 < x1:
-        return [(x1, float(img_w)), (0.0, x2)]
-    return [(x1, x2)]
-
-
-def _horizontal_overlap_ratio(a_bbox, b_bbox, img_w: int) -> float:
-    overlap = 0.0
-    for a_start, a_end in _horizontal_segments(a_bbox, img_w):
-        for b_start, b_end in _horizontal_segments(b_bbox, img_w):
-            overlap += max(0.0, min(a_end, b_end) - max(a_start, b_start))
-
-    a_width = sum(end - start for start, end in _horizontal_segments(a_bbox, img_w))
-    b_width = sum(end - start for start, end in _horizontal_segments(b_bbox, img_w))
-    min_width = min(a_width, b_width)
-    if min_width <= 0.0:
-        return 0.0
-    return overlap / min_width
-
-
-def _seam_edge_px(img_w: int) -> float:
-    return max(24.0, img_w * SEAM_EDGE_FRACTION)
-
-
-def _seam_min_edge_area(img_w: int, img_h: int) -> float:
-    return img_w * img_h * SEAM_MIN_EDGE_AREA_FRACTION
-
-
-def _edge_sides(candidate: Dict[str, Any], img_w: int) -> List[str]:
-    edge_px = _seam_edge_px(img_w)
-    x1, _, x2, _ = candidate["bbox_xyxy"]
-    sides = []
-    if x1 <= edge_px:
-        sides.append("left")
-    if x2 >= img_w - edge_px:
-        sides.append("right")
-    return sides
-
-
-def _find_seam_edge_candidates(
-    candidates: List[Dict[str, Any]],
-    img_w: int,
-    img_h: int,
-) -> List[Dict[str, Any]]:
-    min_area = _seam_min_edge_area(img_w, img_h)
-    return [
-        candidate
-        for candidate in candidates
-        if candidate["area"] >= min_area and _edge_sides(candidate, img_w)
-    ]
-
-
-def _rolled_candidate_match_score(
-    mapped_bbox,
-    mapped_area: float,
-    edge_candidates: List[Dict[str, Any]],
-    img_w: int,
-) -> Optional[Tuple[int, float]]:
-    matched_count = 0
-    match_score = 0.0
-
-    for edge_candidate in edge_candidates:
-        vertical_overlap = _vertical_overlap_ratio(
-            mapped_bbox,
-            edge_candidate["bbox_xyxy"],
-        )
-        if vertical_overlap < SEAM_MIN_VERTICAL_OVERLAP:
-            continue
-
-        horizontal_overlap = _horizontal_overlap_ratio(
-            mapped_bbox,
-            edge_candidate["bbox_xyxy"],
-            img_w,
-        )
-        if horizontal_overlap < SEAM_MIN_HORIZONTAL_OVERLAP:
-            continue
-
-        if mapped_area <= edge_candidate["area"]:
-            continue
-
-        matched_count += 1
-        match_score += edge_candidate["area"] * vertical_overlap * horizontal_overlap
-
-    if matched_count == 0:
-        return None
-
-    return matched_count, match_score
-
-
-def _map_rolled_bbox_to_original(bbox_xyxy, shift: int, img_w: int) -> List[float]:
-    x1, y1, x2, y2 = map(float, bbox_xyxy)
-    return [
-        (x1 - shift) % img_w,
-        y1,
-        (x2 - shift) % img_w,
-        y2,
-    ]
 
 
 def _decode_image_bytes(data: bytes) -> Tuple[np.ndarray, int, int]:
@@ -234,32 +51,6 @@ def _decode_image_bytes(data: bytes) -> Tuple[np.ndarray, int, int]:
 
 async def _load_upload_image(upload: UploadFile) -> Tuple[np.ndarray, int, int]:
     return _decode_image_bytes(await upload.read())
-
-
-def _candidate_payload(
-    rank: int,
-    index: int,
-    xyxy: np.ndarray,
-    conf: float,
-    score: float,
-    img_w: int,
-    img_h: int,
-) -> Dict[str, Any]:
-    x1, y1, x2, y2 = map(float, xyxy)
-    metrics = _bbox_metrics(x1, y1, x2, y2, img_w, img_h)
-    payload = {
-        "rank": rank,
-        "index": int(index),
-        "bbox_xyxy": [x1, y1, x2, y2],
-        "confidence": float(conf),
-        "score": score,
-        "label": "car",
-        **metrics,
-    }
-    if metrics["wraps_x"]:
-        payload["wrapped_width"] = metrics["width"]
-        payload["wrapped_area"] = metrics["area"]
-    return payload
 
 
 def _result_to_payload(
@@ -328,44 +119,13 @@ def _rolled_verify_payload(
     if not rolled_candidates:
         return None
 
-    best_payload = None
-    best_score: Optional[Tuple[int, float, float, float]] = None
-
-    for rolled_candidate in rolled_candidates:
-        mapped_bbox = _map_rolled_bbox_to_original(
-            rolled_candidate["bbox_xyxy"],
-            shift,
-            img_w,
-        )
-        mapped_metrics = _bbox_metrics(*mapped_bbox, img_w, img_h)
-        if not mapped_metrics["wraps_x"]:
-            continue
-
-        match = _rolled_candidate_match_score(
-            mapped_bbox,
-            mapped_metrics["area"],
-            edge_candidates,
-            img_w,
-        )
-        if match is None:
-            continue
-
-        matched_count, match_score = match
-        score = (
-            matched_count,
-            match_score,
-            mapped_metrics["area"],
-            float(rolled_candidate["confidence"]),
-        )
-        if best_score is None or score > best_score:
-            best_score = score
-            best_payload = {
-                "bbox_xyxy": mapped_bbox,
-                "confidence": rolled_candidate["confidence"],
-                "wraps_x": True,
-            }
-
-    return best_payload
+    return _select_verified_rolled_candidate(
+        rolled_candidates,
+        edge_candidates,
+        img_w,
+        img_h,
+        shift,
+    )
 
 
 def _draw_bbox(draw: ImageDraw.ImageDraw, bbox_xyxy, img_w: int, color, line_width: int) -> None:
