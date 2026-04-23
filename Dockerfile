@@ -17,7 +17,7 @@ RUN grep -v '^ultralytics==' requirements.txt > requirements.runtime.txt \
     && python3 -m pip install --no-cache-dir --no-deps ultralytics==8.3.0 \
     && rm requirements.runtime.txt
 
-COPY app.py .
+COPY app.py car_detection_logic.py .
 
 # Optional: pre-download weights at build time (faster first request).
 # If your build environment has no internet, comment this out and YOLO will download at runtime.
