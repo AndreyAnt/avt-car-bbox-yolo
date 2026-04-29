@@ -41,7 +41,8 @@ tests/                    Unit tests for pure detection logic
 requirements.txt          Runtime dependencies
 requirements-test.txt     Lightweight test dependencies
 requirements-dev.txt      Runtime plus test dependencies
-Dockerfile                CUDA runtime container
+Dockerfile                CPU-only distributable container
+Dockerfile.gpu            NVIDIA CUDA container for GPU hosts
 ```
 
 Local sample images and generated YOLO outputs live under `examples/`, which is
@@ -313,34 +314,53 @@ RUNPOD_JSON_OUTPUT_PATH=/path/to/response.json zsh findCar.sh /path/to/image.jpg
 
 ## Docker
 
-Build locally:
+The repo now ships with two container targets:
+
+- `Dockerfile`: CPU-only image for local and team use. Smaller and easier to run anywhere, but inference is CPU-only.
+- `Dockerfile.gpu`: NVIDIA/CUDA image for GPU hosts such as Runpod.
+
+Build the default CPU image:
 
 ```bash
 docker build -t antropov/avt-car-bbox-yolo:local .
 ```
 
-Run:
+Run the CPU image:
 
 ```bash
 docker run --rm -p 8000:8000 antropov/avt-car-bbox-yolo:local
 ```
 
-Build a release tag:
+The CPU image installs the official PyTorch CPU wheels, which avoids pulling the
+Linux CUDA runtime packages into a team-distributable container.
+
+Build the GPU image:
 
 ```bash
-docker build -t antropov/avt-car-bbox-yolo:api-docs-0.1.16-20260423 .
+docker build -f Dockerfile.gpu -t antropov/avt-car-bbox-yolo:gpu-local .
+```
+
+Run the GPU image on an NVIDIA host:
+
+```bash
+docker run --rm --gpus all -p 8000:8000 antropov/avt-car-bbox-yolo:gpu-local
+```
+
+Build a release tag for the default CPU image:
+
+```bash
+docker build -t antropov/avt-car-bbox-yolo:0.1.16 .
 ```
 
 Push:
 
 ```bash
-docker push antropov/avt-car-bbox-yolo:api-docs-0.1.16-20260423
-docker tag antropov/avt-car-bbox-yolo:api-docs-0.1.16-20260423 antropov/avt-car-bbox-yolo:latest
+docker push antropov/avt-car-bbox-yolo:0.1.16
+docker tag antropov/avt-car-bbox-yolo:0.1.16 antropov/avt-car-bbox-yolo:latest
 docker push antropov/avt-car-bbox-yolo:latest
 ```
 
-The Dockerfile uses `nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04` and exposes
-HTTP port `8000`.
+Both Dockerfiles expose HTTP port `8000`.
 
 ## Versioning
 
