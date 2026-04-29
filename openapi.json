@@ -1,0 +1,858 @@
+{
+  "components": {
+    "schemas": {
+      "BatchDetectionResponse": {
+        "examples": [
+          {
+            "count": 2,
+            "items": [
+              {
+                "app_version": "0.1.16",
+                "bbox_xyxy": [
+                  5503.612548828125,
+                  1325.8834228515625,
+                  850.34619140625,
+                  2058.998291015625
+                ],
+                "confidence": 0.8547395467758179,
+                "filename": "b04.jpg",
+                "image_size": {
+                  "h": 3040,
+                  "w": 6080
+                },
+                "wraps_x": true
+              },
+              {
+                "error": "Invalid image file",
+                "filename": "broken.jpg"
+              }
+            ]
+          }
+        ],
+        "properties": {
+          "count": {
+            "description": "Number of uploaded files represented in `items`.",
+            "title": "Count",
+            "type": "integer"
+          },
+          "items": {
+            "description": "Detection results in upload order. Invalid files return an error item.",
+            "items": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/DetectionResponse"
+                },
+                {
+                  "$ref": "#/components/schemas/DetectionErrorResponse"
+                }
+              ]
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "count",
+          "items"
+        ],
+        "title": "BatchDetectionResponse",
+        "type": "object"
+      },
+      "Body_detect_batch_detect_batch_post": {
+        "properties": {
+          "files": {
+            "description": "Input vehicle images. Up to 100 files are accepted.",
+            "items": {
+              "format": "binary",
+              "type": "string"
+            },
+            "title": "Files",
+            "type": "array"
+          }
+        },
+        "required": [
+          "files"
+        ],
+        "title": "Body_detect_batch_detect_batch_post",
+        "type": "object"
+      },
+      "Body_detect_detect_post": {
+        "properties": {
+          "file": {
+            "description": "Input vehicle image. JPEG and PNG are supported by Pillow decoding.",
+            "format": "binary",
+            "title": "File",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_detect_detect_post",
+        "type": "object"
+      },
+      "DetectionErrorResponse": {
+        "examples": [
+          {
+            "error": "Invalid image file",
+            "filename": "broken.jpg"
+          }
+        ],
+        "properties": {
+          "error": {
+            "description": "Per-file validation error message.",
+            "title": "Error",
+            "type": "string"
+          },
+          "filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Original uploaded filename when available.",
+            "title": "Filename"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "DetectionErrorResponse",
+        "type": "object"
+      },
+      "DetectionResponse": {
+        "examples": [
+          {
+            "app_version": "0.1.16",
+            "bbox_xyxy": [
+              5503.612548828125,
+              1325.8834228515625,
+              850.34619140625,
+              2058.998291015625
+            ],
+            "confidence": 0.8547395467758179,
+            "filename": "b04.jpg",
+            "image_size": {
+              "h": 3040,
+              "w": 6080
+            },
+            "wraps_x": true
+          },
+          {
+            "app_version": "0.1.16",
+            "filename": "empty-parking.jpg",
+            "image_size": {
+              "h": 960,
+              "w": 1920
+            },
+            "wraps_x": false
+          }
+        ],
+        "properties": {
+          "app_version": {
+            "description": "Application version served by this container.",
+            "examples": [
+              "0.1.16"
+            ],
+            "title": "App Version",
+            "type": "string"
+          },
+          "bbox_xyxy": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Selected main-car bbox as `[xMin, yMin, xMax, yMax]` pixel coordinates. If `wraps_x=true`, the bbox crosses the panorama seam and `xMax` may be less than `xMin`.",
+            "examples": [
+              [
+                5503.612548828125,
+                1325.8834228515625,
+                850.34619140625,
+                2058.998291015625
+              ]
+            ],
+            "title": "Bbox Xyxy"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "YOLO confidence for the selected detection, or null when no car is detected.",
+            "examples": [
+              0.8547395467758179
+            ],
+            "title": "Confidence"
+          },
+          "filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Original uploaded filename.",
+            "examples": [
+              "b04.jpg"
+            ],
+            "title": "Filename"
+          },
+          "image_size": {
+            "$ref": "#/components/schemas/ImageSizeResponse",
+            "description": "Decoded input image size."
+          },
+          "output_image_base64": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Base64 JPEG with detection overlays; present only when `draw_output=true`.",
+            "examples": [
+              "/9j/4AAQSkZJRgABAQAAAQABAAD..."
+            ],
+            "title": "Output Image Base64"
+          },
+          "output_image_mime_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "MIME type for `output_image_base64`; present only when `draw_output=true`.",
+            "examples": [
+              "image/jpeg"
+            ],
+            "title": "Output Image Mime Type"
+          },
+          "wraps_x": {
+            "description": "True when the returned bbox crosses the horizontal panorama seam.",
+            "title": "Wraps X",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "image_size",
+          "app_version",
+          "wraps_x"
+        ],
+        "title": "DetectionResponse",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HealthResponse": {
+        "examples": [
+          {
+            "app_version": "0.1.16",
+            "car_class_ids": [
+              2
+            ],
+            "model": "yolov8n.pt",
+            "model_ready": true,
+            "ok": true
+          }
+        ],
+        "properties": {
+          "app_version": {
+            "description": "Application version served by this container.",
+            "examples": [
+              "0.1.16"
+            ],
+            "title": "App Version",
+            "type": "string"
+          },
+          "car_class_ids": {
+            "description": "YOLO class ids considered to be cars.",
+            "examples": [
+              [
+                2
+              ]
+            ],
+            "items": {
+              "type": "integer"
+            },
+            "title": "Car Class Ids",
+            "type": "array"
+          },
+          "model": {
+            "description": "YOLO model weights path or name.",
+            "examples": [
+              "yolov8n.pt"
+            ],
+            "title": "Model",
+            "type": "string"
+          },
+          "model_ready": {
+            "description": "True after the startup warm-up inference succeeds.",
+            "title": "Model Ready",
+            "type": "boolean"
+          },
+          "ok": {
+            "description": "True when the model has warmed up and the worker can serve traffic.",
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok",
+          "model_ready",
+          "app_version",
+          "model",
+          "car_class_ids"
+        ],
+        "title": "HealthResponse",
+        "type": "object"
+      },
+      "ImageSizeResponse": {
+        "examples": [
+          {
+            "h": 3040,
+            "w": 6080
+          }
+        ],
+        "properties": {
+          "h": {
+            "description": "Image height in pixels.",
+            "examples": [
+              3040
+            ],
+            "title": "H",
+            "type": "integer"
+          },
+          "w": {
+            "description": "Image width in pixels.",
+            "examples": [
+              6080
+            ],
+            "title": "W",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "w",
+          "h"
+        ],
+        "title": "ImageSizeResponse",
+        "type": "object"
+      },
+      "PingResponse": {
+        "examples": [
+          {
+            "status": "healthy"
+          }
+        ],
+        "properties": {
+          "status": {
+            "description": "Worker readiness status.",
+            "examples": [
+              "healthy"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "PingResponse",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Detects the main car bounding box in regular and 360 panorama vehicle photos. Horizontal panorama seam boxes are represented with `wraps_x=true` and may return `bbox_xyxy[2] < bbox_xyxy[0]`.",
+    "title": "AVT Car Bounding Box YOLO API",
+    "version": "0.1.16"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/detect": {
+      "post": {
+        "description": "Accepts one uploaded image, runs YOLO car detection, ranks detections by visible area, and optionally verifies seam-wrapped cars by rerunning detection on a half-rolled panorama.",
+        "operationId": "detect_detect_post",
+        "parameters": [
+          {
+            "description": "Minimum YOLO confidence threshold for car detections.",
+            "in": "query",
+            "name": "conf",
+            "required": false,
+            "schema": {
+              "default": 0.25,
+              "description": "Minimum YOLO confidence threshold for car detections.",
+              "examples": [
+                0.25
+              ],
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "title": "Conf",
+              "type": "number"
+            }
+          },
+          {
+            "description": "YOLO inference image size. Larger values can improve small-car detection at higher cost.",
+            "in": "query",
+            "name": "imgsz",
+            "required": false,
+            "schema": {
+              "default": 640,
+              "description": "YOLO inference image size. Larger values can improve small-car detection at higher cost.",
+              "examples": [
+                640
+              ],
+              "maximum": 1920,
+              "minimum": 320,
+              "title": "Imgsz",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Maximum number of raw YOLO detections to keep before app-level ranking.",
+            "in": "query",
+            "name": "max_det",
+            "required": false,
+            "schema": {
+              "default": 300,
+              "description": "Maximum number of raw YOLO detections to keep before app-level ranking.",
+              "examples": [
+                300
+              ],
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Max Det",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Maximum number of suggestion boxes to draw when `draw_suggestions=true`.",
+            "in": "query",
+            "name": "candidate_limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "description": "Maximum number of suggestion boxes to draw when `draw_suggestions=true`.",
+              "examples": [
+                10
+              ],
+              "maximum": 100,
+              "minimum": 0,
+              "title": "Candidate Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "When true, include a JPEG with the selected bbox drawn over the input image.",
+            "in": "query",
+            "name": "draw_output",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "When true, include a JPEG with the selected bbox drawn over the input image.",
+              "examples": [
+                false
+              ],
+              "title": "Draw Output",
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "When true and `draw_output=true`, draw candidate suggestion boxes as well.",
+            "in": "query",
+            "name": "draw_suggestions",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "When true and `draw_output=true`, draw candidate suggestion boxes as well.",
+              "examples": [
+                false
+              ],
+              "title": "Draw Suggestions",
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "When true, rerun detection on a half-rolled panorama if first-pass detections touch the horizontal seam edges.",
+            "in": "query",
+            "name": "roll_verify",
+            "required": false,
+            "schema": {
+              "default": true,
+              "description": "When true, rerun detection on a half-rolled panorama if first-pass detections touch the horizontal seam edges.",
+              "examples": [
+                true
+              ],
+              "title": "Roll Verify",
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_detect_detect_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DetectionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "empty": {
+                    "value": {
+                      "detail": "Empty file"
+                    }
+                  },
+                  "invalid": {
+                    "value": {
+                      "detail": "Invalid image file"
+                    }
+                  }
+                }
+              }
+            },
+            "description": "The uploaded file is empty or is not a valid image."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Detect the main car in one image",
+        "tags": [
+          "Detection"
+        ]
+      }
+    },
+    "/detect-batch": {
+      "post": {
+        "description": "Accepts multiple uploaded images and returns one item per file in upload order. Invalid files are reported as per-file error items while valid files continue through YOLO inference.",
+        "operationId": "detect_batch_detect_batch_post",
+        "parameters": [
+          {
+            "description": "Minimum YOLO confidence threshold for car detections.",
+            "in": "query",
+            "name": "conf",
+            "required": false,
+            "schema": {
+              "default": 0.25,
+              "description": "Minimum YOLO confidence threshold for car detections.",
+              "examples": [
+                0.25
+              ],
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "title": "Conf",
+              "type": "number"
+            }
+          },
+          {
+            "description": "YOLO inference image size. Larger values can improve small-car detection at higher cost.",
+            "in": "query",
+            "name": "imgsz",
+            "required": false,
+            "schema": {
+              "default": 640,
+              "description": "YOLO inference image size. Larger values can improve small-car detection at higher cost.",
+              "examples": [
+                640
+              ],
+              "maximum": 1920,
+              "minimum": 320,
+              "title": "Imgsz",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Maximum number of raw YOLO detections to keep before app-level ranking.",
+            "in": "query",
+            "name": "max_det",
+            "required": false,
+            "schema": {
+              "default": 300,
+              "description": "Maximum number of raw YOLO detections to keep before app-level ranking.",
+              "examples": [
+                300
+              ],
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Max Det",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Maximum number of suggestion boxes to draw when `draw_suggestions=true`.",
+            "in": "query",
+            "name": "candidate_limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "description": "Maximum number of suggestion boxes to draw when `draw_suggestions=true`.",
+              "examples": [
+                10
+              ],
+              "maximum": 100,
+              "minimum": 0,
+              "title": "Candidate Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Number of uploaded images to send to YOLO in one batch inference call.",
+            "in": "query",
+            "name": "chunk_size",
+            "required": false,
+            "schema": {
+              "default": 8,
+              "description": "Number of uploaded images to send to YOLO in one batch inference call.",
+              "examples": [
+                8
+              ],
+              "maximum": 32,
+              "minimum": 1,
+              "title": "Chunk Size",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "When true, include a JPEG with the selected bbox drawn over the input image.",
+            "in": "query",
+            "name": "draw_output",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "When true, include a JPEG with the selected bbox drawn over the input image.",
+              "examples": [
+                false
+              ],
+              "title": "Draw Output",
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "When true and `draw_output=true`, draw candidate suggestion boxes as well.",
+            "in": "query",
+            "name": "draw_suggestions",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "When true and `draw_output=true`, draw candidate suggestion boxes as well.",
+              "examples": [
+                false
+              ],
+              "title": "Draw Suggestions",
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "When true, rerun detection on a half-rolled panorama if first-pass detections touch the horizontal seam edges.",
+            "in": "query",
+            "name": "roll_verify",
+            "required": false,
+            "schema": {
+              "default": true,
+              "description": "When true, rerun detection on a half-rolled panorama if first-pass detections touch the horizontal seam edges.",
+              "examples": [
+                true
+              ],
+              "title": "Roll Verify",
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_detect_batch_detect_batch_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchDetectionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "none": {
+                    "value": {
+                      "detail": "No files uploaded"
+                    }
+                  },
+                  "too_many": {
+                    "value": {
+                      "detail": "Too many files; max 100"
+                    }
+                  }
+                }
+              }
+            },
+            "description": "No files were uploaded or the batch exceeded the configured limit."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Detect the main car in multiple images",
+        "tags": [
+          "Detection"
+        ]
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Return model and container health metadata",
+        "tags": [
+          "Health"
+        ]
+      }
+    },
+    "/ping": {
+      "get": {
+        "operationId": "ping_ping_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "detail": "Model warming up"
+                }
+              }
+            },
+            "description": "Model is still warming up."
+          }
+        },
+        "summary": "Check worker readiness",
+        "tags": [
+          "Health"
+        ]
+      }
+    }
+  }
+}
