@@ -1,11 +1,25 @@
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 
 DEFAULT_VERTICAL_CENTER_WEIGHT = 1.0
+VEHICLE_CLASS_NAMES = frozenset({"car", "truck", "bus", "van"})
 SEAM_EDGE_FRACTION = 0.03
 SEAM_MIN_EDGE_AREA_FRACTION = 0.004
 SEAM_MIN_HORIZONTAL_OVERLAP = 0.35
 SEAM_MIN_VERTICAL_OVERLAP = 0.45
+
+
+def _vehicle_class_ids(model_names: Mapping[int, str]) -> List[int]:
+    """Resolve all supported vehicle classes from model metadata.
+
+    COCO models expose car, bus and truck, with no separate van class. Also
+    accept an explicit van label if a future model supplies one. Never fall
+    back to arbitrary class IDs for an unrecognized model.
+    """
+    class_ids = sorted(i for i, name in model_names.items() if name in VEHICLE_CLASS_NAMES)
+    if not class_ids:
+        raise ValueError("Model has no supported vehicle classes (car, truck, bus, van)")
+    return class_ids
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -298,11 +312,12 @@ def _candidate_payload(
     score: float,
     img_w: int,
     img_h: int,
+    label: str = "vehicle",
 ) -> Dict[str, Any]:
-    """Build the API/debug payload for one car candidate.
+    """Build the API/debug payload for one vehicle candidate.
 
     Inputs are the candidate rank, original YOLO detection index, `xyxy` bbox,
-    YOLO confidence, ranking score, and source image size.
+    YOLO confidence, ranking score, source image size, and detected class label.
 
     Returns a dict containing identity fields, bbox, confidence, label, score,
     and `_bbox_metrics` output. Wrapped candidates also include explicit
@@ -316,7 +331,7 @@ def _candidate_payload(
         "bbox_xyxy": [x1, y1, x2, y2],
         "confidence": float(conf),
         "score": score,
-        "label": "car",
+        "label": label,
         **metrics,
     }
     if metrics["wraps_x"]:

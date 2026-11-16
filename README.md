@@ -1,7 +1,7 @@
 # AVT Car Bounding Box YOLO API
 
-FastAPI service for detecting the main car bounding box in regular and
-360-degree panorama vehicle photos. The service uses YOLO for car detection,
+FastAPI service for detecting the main vehicle bounding box in regular and
+360-degree panorama photos of cars, vans and trucks. The service uses YOLO for vehicle detection,
 ranks candidates by visible area with a vertical-center bonus, and includes a
 roll-verification pass for cars split across the left/right edge of an
 equirectangular projection.
@@ -180,15 +180,16 @@ Returns model and container metadata:
 {
   "ok": true,
   "model_ready": true,
-  "app_version": "0.1.17",
+  "app_version": "0.1.18",
   "model": "yolov8n.pt",
-  "car_class_ids": [2]
+  "vehicle_class_ids": [2, 5, 7],
+  "car_class_ids": [2, 5, 7]
 }
 ```
 
 ### `POST /detect`
 
-Detect the main car in one uploaded image.
+Detect the main vehicle in one uploaded image.
 
 Example:
 
@@ -219,7 +220,7 @@ Response:
     "w": 6080,
     "h": 3040
   },
-  "app_version": "0.1.17",
+  "app_version": "0.1.18",
   "bbox_xyxy": [
     5503.612548828125,
     1325.8834228515625,
@@ -242,7 +243,7 @@ If `draw_output=true`, the response also includes:
 
 ### `POST /detect-batch`
 
-Detect the main car in multiple uploaded images.
+Detect the main vehicle in multiple uploaded images.
 
 Example:
 
@@ -260,6 +261,30 @@ chunk_size         Number of images per YOLO batch call, default 8
 
 Invalid files return per-file error items while valid files continue through
 detection.
+
+## Supported Vehicles
+
+Vehicle detection is always enabled for every supported model category; clients
+need no opt-in flag. The bundled `yolov8n.pt` model uses COCO categories:
+
+- `car` (2)
+- `bus` (5)
+- `truck` (7)
+
+COCO has no separate `van` category. Vans are eligible when detected in one of
+these categories. An explicit `van` label is also accepted if a future model
+provides it; class IDs are resolved from the model's names rather than assumed.
+Vehicle recognition still depends on the model; accepting these categories does
+not guarantee a detection for every van or truck.
+
+All categories use the same area and vertical-center ranking, including original
+inference, the panorama seam pass, batch requests and model warm-up. This also
+keeps SUVs that YOLO classifies as trucks or buses when doors or tailgates are open.
+People, motorcycles, bicycles and other categories remain excluded.
+
+`/health` reports `vehicle_class_ids`. The existing `car_class_ids` field remains
+as a compatibility alias with the same expanded list. Detection response fields
+and coordinates are unchanged.
 
 ## Main-Car Priority
 
@@ -391,14 +416,14 @@ docker run --rm --gpus all -p 8000:8000 antropov/avt-car-bbox-yolo:gpu-local
 Build a release tag for the default CPU image:
 
 ```bash
-docker build -t antropov/avt-car-bbox-yolo:0.1.17 .
+docker build -t antropov/avt-car-bbox-yolo:0.1.18 .
 ```
 
 Push:
 
 ```bash
-docker push antropov/avt-car-bbox-yolo:0.1.17
-docker tag antropov/avt-car-bbox-yolo:0.1.17 antropov/avt-car-bbox-yolo:latest
+docker push antropov/avt-car-bbox-yolo:0.1.18
+docker tag antropov/avt-car-bbox-yolo:0.1.18 antropov/avt-car-bbox-yolo:latest
 docker push antropov/avt-car-bbox-yolo:latest
 ```
 
@@ -410,7 +435,7 @@ The API reports its app version in both `/health` and detection responses:
 
 ```json
 {
-  "app_version": "0.1.17"
+  "app_version": "0.1.18"
 }
 ```
 

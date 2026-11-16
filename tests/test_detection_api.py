@@ -9,11 +9,14 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 
-def _result(boxes_xyxy):
+def _result(boxes_xyxy, class_ids=None):
     boxes = MagicMock()
     boxes.__len__.return_value = len(boxes_xyxy)
     boxes.xyxy.cpu.return_value.numpy.return_value = np.asarray(boxes_xyxy, dtype=float)
     boxes.conf.cpu.return_value.numpy.return_value = np.full(len(boxes_xyxy), 0.8)
+    boxes.cls.cpu.return_value.numpy.return_value = np.asarray(
+        class_ids if class_ids is not None else [2] * len(boxes_xyxy), dtype=int,
+    )
     return SimpleNamespace(boxes=boxes)
 
 
@@ -22,7 +25,9 @@ class DetectionAPITests(unittest.TestCase):
     def setUpClass(cls):
         # Keep real request parsing, image decoding and selection, but avoid
         # loading model weights or running inference in deterministic API tests.
-        fake_yolo = SimpleNamespace(YOLO=Mock(return_value=Mock(names={2: "car"})))
+        fake_yolo = SimpleNamespace(YOLO=Mock(return_value=Mock(
+            names={0: "person", 2: "car", 5: "bus", 7: "truck", 8: "boat"},
+        )))
         with patch.dict("sys.modules", {"ultralytics": fake_yolo}):
             cls.service = importlib.import_module("app")
         image = io.BytesIO()
@@ -44,6 +49,8 @@ class DetectionAPITests(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(predict.call_count, len(predictions))
+        for call in predict.call_args_list:
+            self.assertEqual(call.kwargs["classes"], [2, 5, 7])
         payload = response.json()
         return payload["items"][0] if endpoint == "/detect-batch" else payload
 
@@ -128,6 +135,61 @@ class DetectionAPITests(unittest.TestCase):
                         )
                     self.assertEqual(response.status_code, 422, response.text)
                     predict.assert_not_called()
+
+    def test_truck_and_bus_candidates_are_enabled_without_request_flags(self):
+        target = [500, 200, 1300, 800]
+        background_car = [100, 400, 300, 600]
+        for endpoint in ("/detect", "/detect-batch"):
+            for class_id in (5, 7):
+                with self.subTest(endpoint=endpoint, class_id=class_id):
+                    def predict(*, classes, **kwargs):
+                        # Emulate detector filtering: a car-only regression
+                        # would leave only the smaller background car here.
+                        detections = [(target, class_id), (background_car, 2)]
+                        kept = [(box, cls) for box, cls in detections if cls in classes]
+                        return [_result([box for box, _ in kept], [cls for _, cls in kept])]
+                    field = "files" if endpoint == "/detect-batch" else "file"
+                    with patch.object(self.service.model, "predict", side_effect=predict):
+                        response = self.client.post(
+                            endpoint, files=[(field, ("vehicle.png", self.image_bytes, "image/png"))],
+                        )
+                    self.assertEqual(response.status_code, 200, response.text)
+                    payload = response.json()
+                    if endpoint == "/detect-batch":
+                        payload = payload["items"][0]
+                    self.assertEqual(payload["bbox_xyxy"], target)
+
+    def test_seam_verification_accepts_a_vehicle_reclassified_as_truck(self):
+        edge = [0, 400, 300, 600]
+        rolled = [700, 400, 1300, 600]
+        for endpoint in ("/detect", "/detect-batch"):
+            with self.subTest(endpoint=endpoint):
+                payload = self._post(endpoint, [[_result([edge], [2])], [_result([rolled], [7])]], {})
+                self.assertEqual(payload["bbox_xyxy"], [1700, 400, 300, 600])
+                self.assertTrue(payload["wraps_x"])
+
+    def test_candidate_labels_preserve_detected_vehicle_class(self):
+        for class_id, label in ((2, "car"), (5, "bus"), (7, "truck")):
+            with self.subTest(class_id=class_id):
+                _, candidates = self.service._result_to_payload(
+                    _result([[500, 200, 1300, 800]], [class_id]), 2000, 1000,
+                )
+                self.assertEqual(candidates[0]["label"], label)
+
+    def test_health_reports_vehicle_classes_and_preserves_legacy_alias(self):
+        response = self.client.get("/health")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["vehicle_class_ids"], [2, 5, 7])
+        self.assertEqual(response.json()["car_class_ids"], [2, 5, 7])
+
+    def test_warm_up_uses_all_supported_vehicle_classes(self):
+        was_ready = self.service.app.state.model_ready
+        try:
+            with patch.object(self.service.model, "predict") as predict:
+                self.service.warm_up_model()
+            self.assertEqual(predict.call_args.kwargs["classes"], [2, 5, 7])
+        finally:
+            self.service.app.state.model_ready = was_ready
 
 
 if __name__ == "__main__":

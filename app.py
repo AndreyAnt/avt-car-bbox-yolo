@@ -16,12 +16,13 @@ from car_detection_logic import (
     _find_seam_edge_candidates,
     _rank_car_candidates_xyxy,
     _select_verified_rolled_candidate,
+    _vehicle_class_ids,
 )
 
 # Choose speed vs accuracy:
 # - yolov8n.pt: fastest
 # - yolov8s.pt: still fast, better accuracy
-APP_VERSION = "0.1.17"
+APP_VERSION = "0.1.18"
 MODEL_PATH = "yolov8n.pt"
 MAX_BATCH_FILES = 100
 VERTICAL_CENTER_WEIGHT_DESCRIPTION = (
@@ -33,8 +34,10 @@ VERTICAL_CENTER_WEIGHT_DESCRIPTION = (
 app = FastAPI(
     title="AVT Car Bounding Box YOLO API",
     description=(
-        "Detects the main car bounding box in regular and 360 panorama vehicle "
-        "photos. Horizontal panorama seam boxes are represented with `wraps_x=true` "
+        "Detects the main vehicle bounding box in regular and 360 panorama "
+        "photos. Cars, trucks and buses are always included; vans use these "
+        "categories in the bundled model. Horizontal panorama seam boxes "
+        "are represented with `wraps_x=true` "
         "and may return `bbox_xyxy[2] < bbox_xyxy[0]`."
     ),
     version=APP_VERSION,
@@ -43,11 +46,8 @@ app.state.model_ready = False
 
 model = YOLO(MODEL_PATH)
 
-# Find class id(s) for "car" if present
-CAR_CLASS_IDS: List[int] = [i for i, name in model.names.items() if name == "car"]
-# Fallback (COCO typically uses id 2 for car)
-if not CAR_CLASS_IDS:
-    CAR_CLASS_IDS = [2]
+# Always include all supported vehicle categories in every inference pass.
+VEHICLE_CLASS_IDS = _vehicle_class_ids(model.names)
 
 
 class ImageSizeResponse(BaseModel):
@@ -90,7 +90,8 @@ class HealthResponse(BaseModel):
                     "model_ready": True,
                     "app_version": APP_VERSION,
                     "model": MODEL_PATH,
-                    "car_class_ids": [2],
+                    "vehicle_class_ids": [2, 5, 7],
+                    "car_class_ids": [2, 5, 7],
                 }
             ]
         }
@@ -100,7 +101,12 @@ class HealthResponse(BaseModel):
     model_ready: bool = Field(..., description="True after the startup warm-up inference succeeds.")
     app_version: str = Field(..., description="Application version served by this container.", examples=[APP_VERSION])
     model: str = Field(..., description="YOLO model weights path or name.", examples=[MODEL_PATH])
-    car_class_ids: List[int] = Field(..., description="YOLO class ids considered to be cars.", examples=[[2]])
+    vehicle_class_ids: List[int] = Field(
+        ..., description="YOLO class ids always accepted as vehicle candidates.", examples=[[2, 5, 7]],
+    )
+    car_class_ids: List[int] = Field(
+        ..., description="Legacy alias for vehicle_class_ids; includes cars, buses and trucks.", examples=[[2, 5, 7]],
+    )
 
 
 class DetectionOptions(BaseModel):
@@ -125,14 +131,14 @@ class DetectionOptions(BaseModel):
         0.25,
         ge=0.0,
         le=1.0,
-        description="Minimum YOLO confidence threshold for car detections.",
+        description="Minimum YOLO confidence threshold for vehicle detections.",
         examples=[0.25],
     )
     imgsz: int = Field(
         640,
         ge=320,
         le=1920,
-        description="YOLO inference image size. Larger values can improve small-car detection at higher cost.",
+        description="YOLO inference image size. Larger values can improve small-vehicle detection at higher cost.",
         examples=[640],
     )
     max_det: int = Field(
@@ -239,14 +245,14 @@ class DetectionResponse(BaseModel):
     bbox_xyxy: Optional[List[float]] = Field(
         None,
         description=(
-            "Selected main-car bbox as `[xMin, yMin, xMax, yMax]` pixel coordinates. "
+            "Selected main-vehicle bbox as `[xMin, yMin, xMax, yMax]` pixel coordinates. "
             "If `wraps_x=true`, the bbox crosses the panorama seam and `xMax` may be less than `xMin`."
         ),
         examples=[[5503.612548828125, 1325.8834228515625, 850.34619140625, 2058.998291015625]],
     )
     confidence: Optional[float] = Field(
         None,
-        description="YOLO confidence for the selected detection, or null when no car is detected.",
+        description="YOLO confidence for the selected detection, or null when no vehicle is detected.",
         examples=[0.8547395467758179],
     )
     wraps_x: bool = Field(..., description="True when the returned bbox crosses the horizontal panorama seam.")
@@ -344,6 +350,7 @@ def _result_to_payload(
 
     xyxy = result.boxes.xyxy.cpu().numpy()
     confs = result.boxes.conf.cpu().numpy()
+    class_ids = result.boxes.cls.cpu().numpy()
 
     ranked = _rank_car_candidates_xyxy(xyxy, confs, img_w, img_h, vertical_center_weight)
     i = ranked[0][0]
@@ -351,7 +358,10 @@ def _result_to_payload(
     x1, y1, x2, y2 = map(float, xyxy[i])
 
     cars = [
-        _candidate_payload(rank, idx, xyxy[idx], confs[idx], score, img_w, img_h)
+        _candidate_payload(
+            rank, idx, xyxy[idx], confs[idx], score, img_w, img_h,
+            label=model.names[int(class_ids[idx])],
+        )
         for rank, (idx, score) in enumerate(ranked, start=1)
     ]
     main_car = {
@@ -374,7 +384,7 @@ def _predict_car_result(
         conf=conf,
         imgsz=imgsz,
         max_det=max_det,
-        classes=CAR_CLASS_IDS,
+        classes=VEHICLE_CLASS_IDS,
         verbose=False,
     )
     return results[0]
@@ -448,7 +458,8 @@ def _health_payload():
         "model_ready": app.state.model_ready,
         "app_version": APP_VERSION,
         "model": MODEL_PATH,
-        "car_class_ids": CAR_CLASS_IDS,
+        "vehicle_class_ids": VEHICLE_CLASS_IDS,
+        "car_class_ids": VEHICLE_CLASS_IDS,
     }
 
 
@@ -457,14 +468,14 @@ def _detection_options(
         0.25,
         ge=0.0,
         le=1.0,
-        description="Minimum YOLO confidence threshold for car detections.",
+        description="Minimum YOLO confidence threshold for vehicle detections.",
         examples=[0.25],
     ),
     imgsz: int = Query(
         640,
         ge=320,
         le=1920,
-        description="YOLO inference image size. Larger values can improve small-car detection at higher cost.",
+        description="YOLO inference image size. Larger values can improve small-vehicle detection at higher cost.",
         examples=[640],
     ),
     max_det: int = Query(
@@ -524,14 +535,14 @@ def _batch_detection_options(
         0.25,
         ge=0.0,
         le=1.0,
-        description="Minimum YOLO confidence threshold for car detections.",
+        description="Minimum YOLO confidence threshold for vehicle detections.",
         examples=[0.25],
     ),
     imgsz: int = Query(
         640,
         ge=320,
         le=1920,
-        description="YOLO inference image size. Larger values can improve small-car detection at higher cost.",
+        description="YOLO inference image size. Larger values can improve small-vehicle detection at higher cost.",
         examples=[640],
     ),
     max_det: int = Query(
@@ -603,7 +614,7 @@ def warm_up_model():
         source=warmup_image,
         conf=0.25,
         imgsz=640,
-        classes=CAR_CLASS_IDS,
+        classes=VEHICLE_CLASS_IDS,
         verbose=False,
     )
     app.state.model_ready = True
@@ -700,12 +711,12 @@ def _build_detection_response(
     response_model=DetectionResponse,
     response_model_exclude_unset=True,
     tags=["Detection"],
-    summary="Detect the main car in one image",
+    summary="Detect the main vehicle in one image",
     description=(
-        "Accepts one uploaded image, runs YOLO car detection, ranks detections "
+        "Accepts one uploaded image, runs YOLO vehicle detection, ranks detections "
         "by visible area with a vertical-center bonus, and optionally verifies "
-        "seam-wrapped cars by rerunning detection on a half-rolled panorama. "
-        "Verified cars compete with the first-pass selection using the same score."
+        "seam-wrapped vehicles by rerunning detection on a half-rolled panorama. "
+        "Verified vehicles compete with the first-pass selection using the same score."
     ),
     responses={
         400: {
@@ -758,11 +769,11 @@ async def detect(
     response_model=BatchDetectionResponse,
     response_model_exclude_unset=True,
     tags=["Detection"],
-    summary="Detect the main car in multiple images",
+    summary="Detect the main vehicle in multiple images",
     description=(
         "Accepts multiple uploaded images and returns one item per file in upload "
         "order. Invalid files are reported as per-file error items while valid "
-        "files continue through YOLO inference. Cars are ranked by visible area "
+        "files continue through YOLO inference. Vehicles are ranked by visible area "
         "with a vertical-center bonus, using the same selection as /detect."
     ),
     responses={
@@ -831,7 +842,7 @@ async def detect_batch(
             conf=options.conf,
             imgsz=options.imgsz,
             max_det=options.max_det,
-            classes=CAR_CLASS_IDS,
+            classes=VEHICLE_CLASS_IDS,
             verbose=False,
         )
 
