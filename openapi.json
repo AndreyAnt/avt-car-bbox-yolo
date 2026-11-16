@@ -7,7 +7,7 @@
             "count": 2,
             "items": [
               {
-                "app_version": "0.1.16",
+                "app_version": "0.1.17",
                 "bbox_xyxy": [
                   5503.612548828125,
                   1325.8834228515625,
@@ -126,7 +126,7 @@
       "DetectionResponse": {
         "examples": [
           {
-            "app_version": "0.1.16",
+            "app_version": "0.1.17",
             "bbox_xyxy": [
               5503.612548828125,
               1325.8834228515625,
@@ -142,7 +142,7 @@
             "wraps_x": true
           },
           {
-            "app_version": "0.1.16",
+            "app_version": "0.1.17",
             "filename": "empty-parking.jpg",
             "image_size": {
               "h": 960,
@@ -155,7 +155,7 @@
           "app_version": {
             "description": "Application version served by this container.",
             "examples": [
-              "0.1.16"
+              "0.1.17"
             ],
             "title": "App Version",
             "type": "string"
@@ -277,7 +277,7 @@
       "HealthResponse": {
         "examples": [
           {
-            "app_version": "0.1.16",
+            "app_version": "0.1.17",
             "car_class_ids": [
               2
             ],
@@ -290,7 +290,7 @@
           "app_version": {
             "description": "Application version served by this container.",
             "examples": [
-              "0.1.16"
+              "0.1.17"
             ],
             "title": "App Version",
             "type": "string"
@@ -429,13 +429,13 @@
   "info": {
     "description": "Detects the main car bounding box in regular and 360 panorama vehicle photos. Horizontal panorama seam boxes are represented with `wraps_x=true` and may return `bbox_xyxy[2] < bbox_xyxy[0]`.",
     "title": "AVT Car Bounding Box YOLO API",
-    "version": "0.1.16"
+    "version": "0.1.17"
   },
   "openapi": "3.1.0",
   "paths": {
     "/detect": {
       "post": {
-        "description": "Accepts one uploaded image, runs YOLO car detection, ranks detections by visible area, and optionally verifies seam-wrapped cars by rerunning detection on a half-rolled panorama.",
+        "description": "Accepts one uploaded image, runs YOLO car detection, ranks detections by visible area with a vertical-center bonus, and optionally verifies seam-wrapped cars by rerunning detection on a half-rolled panorama. Verified cars compete with the first-pass selection using the same score.",
         "operationId": "detect_detect_post",
         "parameters": [
           {
@@ -550,6 +550,23 @@
               "title": "Roll Verify",
               "type": "boolean"
             }
+          },
+          {
+            "description": "Strength of the bbox vertical-center bonus. 0 ranks by area alone; 1 gives up to a 2x area multiplier at half the image height. Horizontal position does not affect priority.",
+            "in": "query",
+            "name": "vertical_center_weight",
+            "required": false,
+            "schema": {
+              "default": 1.0,
+              "description": "Strength of the bbox vertical-center bonus. 0 ranks by area alone; 1 gives up to a 2x area multiplier at half the image height. Horizontal position does not affect priority.",
+              "examples": [
+                1.0
+              ],
+              "maximum": 4.0,
+              "minimum": 0.0,
+              "title": "Vertical Center Weight",
+              "type": "number"
+            }
           }
         ],
         "requestBody": {
@@ -611,7 +628,7 @@
     },
     "/detect-batch": {
       "post": {
-        "description": "Accepts multiple uploaded images and returns one item per file in upload order. Invalid files are reported as per-file error items while valid files continue through YOLO inference.",
+        "description": "Accepts multiple uploaded images and returns one item per file in upload order. Invalid files are reported as per-file error items while valid files continue through YOLO inference. Cars are ranked by visible area with a vertical-center bonus, using the same selection as /detect.",
         "operationId": "detect_batch_detect_batch_post",
         "parameters": [
           {
@@ -742,6 +759,23 @@
               ],
               "title": "Roll Verify",
               "type": "boolean"
+            }
+          },
+          {
+            "description": "Strength of the bbox vertical-center bonus. 0 ranks by area alone; 1 gives up to a 2x area multiplier at half the image height. Horizontal position does not affect priority.",
+            "in": "query",
+            "name": "vertical_center_weight",
+            "required": false,
+            "schema": {
+              "default": 1.0,
+              "description": "Strength of the bbox vertical-center bonus. 0 ranks by area alone; 1 gives up to a 2x area multiplier at half the image height. Horizontal position does not affect priority.",
+              "examples": [
+                1.0
+              ],
+              "maximum": 4.0,
+              "minimum": 0.0,
+              "title": "Vertical Center Weight",
+              "type": "number"
             }
           }
         ],

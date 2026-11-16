@@ -45,6 +45,7 @@ candidate_limit=${RUNPOD_CANDIDATE_LIMIT:-10}
 draw_suggestions=${RUNPOD_DRAW_SUGGESTIONS:-false}
 max_det=${RUNPOD_MAX_DET:-300}
 roll_verify=${RUNPOD_ROLL_VERIFY:-true}
+vertical_center_weight=${RUNPOD_VERTICAL_CENTER_WEIGHT:-1.0}
 
 input_filename=${input_image:t}
 input_stem=${input_filename:r}
@@ -98,9 +99,9 @@ while true; do
 done
 
 print "Worker is ready. Sending $input_filename for detection."
-print "Detection options: candidate_limit=$candidate_limit draw_suggestions=$draw_suggestions max_det=$max_det roll_verify=$roll_verify"
+print "Detection options: candidate_limit=$candidate_limit draw_suggestions=$draw_suggestions max_det=$max_det roll_verify=$roll_verify vertical_center_weight=$vertical_center_weight"
 
-detect_url="$base_url/detect?draw_output=true&candidate_limit=$candidate_limit&draw_suggestions=$draw_suggestions&max_det=$max_det&roll_verify=$roll_verify"
+detect_url="$base_url/detect?draw_output=true&candidate_limit=$candidate_limit&draw_suggestions=$draw_suggestions&max_det=$max_det&roll_verify=$roll_verify&vertical_center_weight=$vertical_center_weight"
 
 curl_metrics=$(
   curl --http1.1 -sS -H "Expect:" \

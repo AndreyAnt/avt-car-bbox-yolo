@@ -2,8 +2,9 @@
 
 FastAPI service for detecting the main car bounding box in regular and
 360-degree panorama vehicle photos. The service uses YOLO for car detection,
-ranks candidates by visible area, and includes a roll-verification pass for
-cars split across the left/right edge of an equirectangular projection.
+ranks candidates by visible area with a vertical-center bonus, and includes a
+roll-verification pass for cars split across the left/right edge of an
+equirectangular projection.
 
 ## What It Returns
 
@@ -37,7 +38,7 @@ modified/rolled image coordinate system.
 app.py                    FastAPI app, YOLO loading, API schemas, endpoints
 car_detection_logic.py    Pure bbox ranking and roll-verification logic
 findCar.sh                Runpod helper script for one image
-tests/                    Unit tests for pure detection logic
+tests/                    Pure detection logic and API regression tests
 requirements.txt          Runtime dependencies
 requirements-test.txt     Lightweight test dependencies
 requirements-dev.txt      Runtime plus test dependencies
@@ -76,7 +77,8 @@ source .venv/bin/activate
 
 ## Running Tests
 
-For logic tests only, install the lightweight test dependencies:
+Install the lightweight test dependencies (no Torch, Ultralytics, or model weights
+are needed). API tests use fixed YOLO outputs to exercise both endpoints:
 
 ```bash
 python -m pip install -r requirements-test.txt
@@ -178,7 +180,7 @@ Returns model and container metadata:
 {
   "ok": true,
   "model_ready": true,
-  "app_version": "0.1.16",
+  "app_version": "0.1.17",
   "model": "yolov8n.pt",
   "car_class_ids": [2]
 }
@@ -198,13 +200,14 @@ curl -X POST "http://localhost:8000/detect?roll_verify=true&draw_output=false" \
 Useful query parameters:
 
 ```text
-conf              YOLO confidence threshold, default 0.25
-imgsz             YOLO inference image size, default 640
-max_det           Max raw detections, default 300
-candidate_limit   Max suggestion boxes to draw, default 10
-draw_output       Include base64 JPEG with selected bbox, default false
-draw_suggestions  Draw candidate boxes when draw_output=true, default false
-roll_verify       Enable panorama seam verification, default true
+conf                    YOLO confidence threshold, default 0.25
+imgsz                   YOLO inference image size, default 640
+max_det                 Max raw detections, default 300
+candidate_limit         Max suggestion boxes to draw, default 10
+draw_output             Include base64 JPEG with selected bbox, default false
+draw_suggestions        Draw candidate boxes when draw_output=true, default false
+roll_verify             Enable panorama seam verification, default true
+vertical_center_weight  Vertical-center bonus strength, default 1.0, range 0..4
 ```
 
 Response:
@@ -216,7 +219,7 @@ Response:
     "w": 6080,
     "h": 3040
   },
-  "app_version": "0.1.16",
+  "app_version": "0.1.17",
   "bbox_xyxy": [
     5503.612548828125,
     1325.8834228515625,
@@ -258,18 +261,56 @@ chunk_size         Number of images per YOLO batch call, default 8
 Invalid files return per-file error items while valid files continue through
 detection.
 
+## Main-Car Priority
+
+Candidates are ranked using visible bbox area and the vertical position of the
+bbox center. **Horizontal position is ignored** because a 360 panorama can have
+any horizontal offset, including a main car split across the seam.
+
+For image height `H`, clamped bbox center `cy`, visible bbox area `A`, and
+`vertical_center_weight = w`:
+
+```text
+vertical_center_bonus = 1 - abs(2 * cy / H - 1)
+score = A * (1 + w * vertical_center_bonus)
+```
+
+The bonus ranges from 0 at the top/bottom to 1 at half the image height. At the
+default weight of `1`, the area multiplier ranges from 1x to 2x. Area still
+matters: a tiny centered background car cannot outweigh a car more than twice
+its visible area. Confidence only breaks equal-score ties.
+
+For example, a centered car with an area of 100,000 pixels scores 200,000. A
+larger foreground car with an area of 120,000 pixels and `cy = 0.75 * H` scores
+180,000, so the centered car wins.
+
+Both `/detect` and `/detect-batch` accept `vertical_center_weight` (0 through 4).
+Set it to `0` for area-only ranking, or raise it to strengthen the preference for
+mid-height cars. This parameter applies equally to original and verified seam
+detections. Disabling the bonus keeps the seam comparison fix described below.
+
+This is a geometric heuristic, not identification of a particular vehicle.
+The default weight is a starting point; tune it against labeled crowded-parking
+photos, especially when the camera is tilted. The embedded Runpod fixtures
+verify seam geometry, but contain only selected bboxes, not competing detections;
+they do not measure selection accuracy on crowded parking lots.
+
 ## Roll Verification Logic
 
 The detection flow is:
 
 1. Run YOLO on the original image.
-2. Rank car candidates by visible bbox area. Confidence only breaks exact ties.
+2. Rank car candidates by area with the vertical-center bonus. Confidence only
+   breaks exact score ties.
 3. If a meaningful candidate touches the left or right panorama edge, roll the
    image horizontally by half its width.
 4. Run YOLO on the rolled image.
 5. Map rolled detections back into the original coordinate system.
-6. Accept the best mapped detection only if it becomes `wraps_x=true` and
-   overlaps the first-pass edge candidate strongly enough.
+6. Keep mapped detections only if they become `wraps_x=true` and overlap a
+   first-pass edge candidate strongly enough.
+7. Compare verified cars with the first-pass winner using the same priority
+   score and confidence tie-breaker. A seam car does not automatically replace
+   the main car; exact score/confidence ties retain the first-pass selection.
 
 This handles cases where YOLO sees only one side of a car at the panorama seam,
 then sees the full car after the half-roll.
@@ -288,6 +329,7 @@ RUNPOD_CANDIDATE_LIMIT=10
 RUNPOD_DRAW_SUGGESTIONS=false
 RUNPOD_MAX_DET=300
 RUNPOD_ROLL_VERIFY=true
+RUNPOD_VERTICAL_CENTER_WEIGHT=1.0
 RUNPOD_WARMUP_TIMEOUT_SECONDS=180
 RUNPOD_POLL_INTERVAL_SECONDS=2
 RUNPOD_PING_MAX_TIME_SECONDS=10
@@ -349,14 +391,14 @@ docker run --rm --gpus all -p 8000:8000 antropov/avt-car-bbox-yolo:gpu-local
 Build a release tag for the default CPU image:
 
 ```bash
-docker build -t antropov/avt-car-bbox-yolo:0.1.16 .
+docker build -t antropov/avt-car-bbox-yolo:0.1.17 .
 ```
 
 Push:
 
 ```bash
-docker push antropov/avt-car-bbox-yolo:0.1.16
-docker tag antropov/avt-car-bbox-yolo:0.1.16 antropov/avt-car-bbox-yolo:latest
+docker push antropov/avt-car-bbox-yolo:0.1.17
+docker tag antropov/avt-car-bbox-yolo:0.1.17 antropov/avt-car-bbox-yolo:latest
 docker push antropov/avt-car-bbox-yolo:latest
 ```
 
@@ -368,7 +410,7 @@ The API reports its app version in both `/health` and detection responses:
 
 ```json
 {
-  "app_version": "0.1.16"
+  "app_version": "0.1.17"
 }
 ```
 

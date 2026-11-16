@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from ultralytics import YOLO
 
 from car_detection_logic import (
+    DEFAULT_VERTICAL_CENTER_WEIGHT,
     _bbox_metrics,
     _candidate_payload,
     _find_seam_edge_candidates,
@@ -20,9 +21,14 @@ from car_detection_logic import (
 # Choose speed vs accuracy:
 # - yolov8n.pt: fastest
 # - yolov8s.pt: still fast, better accuracy
-APP_VERSION = "0.1.16"
+APP_VERSION = "0.1.17"
 MODEL_PATH = "yolov8n.pt"
 MAX_BATCH_FILES = 100
+VERTICAL_CENTER_WEIGHT_DESCRIPTION = (
+    "Strength of the bbox vertical-center bonus. 0 ranks by area alone; "
+    "1 gives up to a 2x area multiplier at half the image height. "
+    "Horizontal position does not affect priority."
+)
 
 app = FastAPI(
     title="AVT Car Bounding Box YOLO API",
@@ -109,6 +115,7 @@ class DetectionOptions(BaseModel):
                     "draw_output": False,
                     "draw_suggestions": False,
                     "roll_verify": True,
+                    "vertical_center_weight": DEFAULT_VERTICAL_CENTER_WEIGHT,
                 }
             ]
         }
@@ -160,6 +167,13 @@ class DetectionOptions(BaseModel):
         ),
         examples=[True],
     )
+    vertical_center_weight: float = Field(
+        DEFAULT_VERTICAL_CENTER_WEIGHT,
+        ge=0.0,
+        le=4.0,
+        description=VERTICAL_CENTER_WEIGHT_DESCRIPTION,
+        examples=[DEFAULT_VERTICAL_CENTER_WEIGHT],
+    )
 
 
 class BatchDetectionOptions(DetectionOptions):
@@ -175,6 +189,7 @@ class BatchDetectionOptions(DetectionOptions):
                     "draw_output": False,
                     "draw_suggestions": False,
                     "roll_verify": True,
+                    "vertical_center_weight": DEFAULT_VERTICAL_CENTER_WEIGHT,
                 }
             ]
         }
@@ -322,6 +337,7 @@ def _result_to_payload(
     result,
     img_w: int,
     img_h: int,
+    vertical_center_weight: float = DEFAULT_VERTICAL_CENTER_WEIGHT,
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     if result.boxes is None or len(result.boxes) == 0:
         return {"bbox_xyxy": None, "confidence": None, "wraps_x": False}, []
@@ -329,7 +345,7 @@ def _result_to_payload(
     xyxy = result.boxes.xyxy.cpu().numpy()
     confs = result.boxes.conf.cpu().numpy()
 
-    ranked = _rank_car_candidates_xyxy(xyxy, confs, img_w, img_h)
+    ranked = _rank_car_candidates_xyxy(xyxy, confs, img_w, img_h, vertical_center_weight)
     i = ranked[0][0]
     best_conf = float(confs[i])
     x1, y1, x2, y2 = map(float, xyxy[i])
@@ -372,6 +388,7 @@ def _rolled_verify_payload(
     conf: float,
     imgsz: int,
     max_det: int,
+    vertical_center_weight: float = DEFAULT_VERTICAL_CENTER_WEIGHT,
 ) -> Optional[Dict[str, Any]]:
     edge_candidates = _find_seam_edge_candidates(candidates, img_w, img_h)
     if not edge_candidates:
@@ -380,7 +397,7 @@ def _rolled_verify_payload(
     shift = img_w // 2
     rolled_img = np.roll(img_array, shift=shift, axis=1)
     rolled_result = _predict_car_result(rolled_img, conf, imgsz, max_det)
-    _, rolled_candidates = _result_to_payload(rolled_result, img_w, img_h)
+    _, rolled_candidates = _result_to_payload(rolled_result, img_w, img_h, vertical_center_weight)
     if not rolled_candidates:
         return None
 
@@ -390,6 +407,8 @@ def _rolled_verify_payload(
         img_w,
         img_h,
         shift,
+        main_candidate=candidates[0],
+        vertical_center_weight=vertical_center_weight,
     )
 
 
@@ -480,6 +499,13 @@ def _detection_options(
         ),
         examples=[True],
     ),
+    vertical_center_weight: float = Query(
+        DEFAULT_VERTICAL_CENTER_WEIGHT,
+        ge=0.0,
+        le=4.0,
+        description=VERTICAL_CENTER_WEIGHT_DESCRIPTION,
+        examples=[DEFAULT_VERTICAL_CENTER_WEIGHT],
+    ),
 ) -> DetectionOptions:
     return DetectionOptions(
         conf=conf,
@@ -489,6 +515,7 @@ def _detection_options(
         draw_output=draw_output,
         draw_suggestions=draw_suggestions,
         roll_verify=roll_verify,
+        vertical_center_weight=vertical_center_weight,
     )
 
 
@@ -546,6 +573,13 @@ def _batch_detection_options(
         ),
         examples=[True],
     ),
+    vertical_center_weight: float = Query(
+        DEFAULT_VERTICAL_CENTER_WEIGHT,
+        ge=0.0,
+        le=4.0,
+        description=VERTICAL_CENTER_WEIGHT_DESCRIPTION,
+        examples=[DEFAULT_VERTICAL_CENTER_WEIGHT],
+    ),
 ) -> BatchDetectionOptions:
     return BatchDetectionOptions(
         conf=conf,
@@ -556,6 +590,7 @@ def _batch_detection_options(
         draw_output=draw_output,
         draw_suggestions=draw_suggestions,
         roll_verify=roll_verify,
+        vertical_center_weight=vertical_center_weight,
     )
 
 
@@ -619,8 +654,9 @@ def _build_detection_response(
     conf: float,
     imgsz: int,
     max_det: int,
+    vertical_center_weight: float = DEFAULT_VERTICAL_CENTER_WEIGHT,
 ):
-    detection_payload, candidates = _result_to_payload(result, img_w, img_h)
+    detection_payload, candidates = _result_to_payload(result, img_w, img_h, vertical_center_weight)
     if roll_verify:
         verified_payload = _rolled_verify_payload(
             img_array,
@@ -630,6 +666,7 @@ def _build_detection_response(
             conf,
             imgsz,
             max_det,
+            vertical_center_weight,
         )
         if verified_payload is not None:
             detection_payload = verified_payload
@@ -666,8 +703,9 @@ def _build_detection_response(
     summary="Detect the main car in one image",
     description=(
         "Accepts one uploaded image, runs YOLO car detection, ranks detections "
-        "by visible area, and optionally verifies seam-wrapped cars by rerunning "
-        "detection on a half-rolled panorama."
+        "by visible area with a vertical-center bonus, and optionally verifies "
+        "seam-wrapped cars by rerunning detection on a half-rolled panorama. "
+        "Verified cars compete with the first-pass selection using the same score."
     ),
     responses={
         400: {
@@ -711,6 +749,7 @@ async def detect(
         options.conf,
         options.imgsz,
         options.max_det,
+        options.vertical_center_weight,
     )
 
 
@@ -723,7 +762,8 @@ async def detect(
     description=(
         "Accepts multiple uploaded images and returns one item per file in upload "
         "order. Invalid files are reported as per-file error items while valid "
-        "files continue through YOLO inference."
+        "files continue through YOLO inference. Cars are ranked by visible area "
+        "with a vertical-center bonus, using the same selection as /detect."
     ),
     responses={
         400: {
@@ -809,6 +849,7 @@ async def detect_batch(
                 options.conf,
                 options.imgsz,
                 options.max_det,
+                options.vertical_center_weight,
             )
 
     return {"count": len(responses), "items": responses}

@@ -9,6 +9,7 @@ from car_detection_logic import (
     _candidate_payload,
     _find_seam_edge_candidates,
     _map_rolled_bbox_to_original,
+    _rank_car_candidates_xyxy,
     _select_verified_rolled_candidate,
 )
 
@@ -188,6 +189,20 @@ class CarDetectionLogicTests(unittest.TestCase):
                 else:
                     self.assertGreaterEqual(case.bbox_xyxy[2], case.bbox_xyxy[0])
 
+    def test_real_runpod_bbox_priority_is_invariant_to_horizontal_offset(self):
+        for case in REAL_RUNPOD_CASES:
+            expected_score = _rank_car_candidates_xyxy(
+                [case.bbox_xyxy], [case.confidence], IMG_W, IMG_H,
+            )[0][1]
+            for offset in (1, 137, SHIFT, IMG_W - 1):
+                with self.subTest(case=case.name, offset=offset):
+                    x1, y1, x2, y2 = case.bbox_xyxy
+                    shifted_bbox = [(x1 + offset) % IMG_W, y1, (x2 + offset) % IMG_W, y2]
+                    actual_score = _rank_car_candidates_xyxy(
+                        [shifted_bbox], [case.confidence], IMG_W, IMG_H,
+                    )[0][1]
+                    self.assertAlmostEqual(actual_score, expected_score, places=6)
+
     def test_edge_seed_finder_keeps_only_real_edge_fragments(self):
         left_seed = _left_edge_seed(next(_cases("b_pack_v2", wraps_x=True)))
         right_seed = _right_edge_seed(next(_cases("c_pack_v2", wraps_x=True)))
@@ -237,6 +252,7 @@ class CarDetectionLogicTests(unittest.TestCase):
                     IMG_W,
                     IMG_H,
                     SHIFT,
+                    main_candidate=_left_edge_seed(case),
                 )
 
                 self.assertIsNotNone(verified)
@@ -253,6 +269,7 @@ class CarDetectionLogicTests(unittest.TestCase):
                     IMG_W,
                     IMG_H,
                     SHIFT,
+                    main_candidate=_right_edge_seed(case),
                 )
 
                 self.assertIsNotNone(verified)

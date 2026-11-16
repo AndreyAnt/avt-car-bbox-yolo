@@ -1,6 +1,7 @@
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 
+DEFAULT_VERTICAL_CENTER_WEIGHT = 1.0
 SEAM_EDGE_FRACTION = 0.03
 SEAM_MIN_EDGE_AREA_FRACTION = 0.004
 SEAM_MIN_HORIZONTAL_OVERLAP = 0.35
@@ -56,19 +57,38 @@ def _bbox_metrics(
     }
 
 
+def _main_car_score(
+    metrics: Dict[str, Any],
+    img_h: int,
+    vertical_center_weight: float,
+) -> float:
+    """Combine visible area with a bounded bonus for vertical centering.
+
+    At the image mid-height the area multiplier is `1 + vertical_center_weight`;
+    it decreases linearly toward 1 at the top and bottom. Horizontal position is
+    deliberately ignored so panorama yaw and seam wrapping cannot affect priority.
+    A weight of zero restores area-only ranking.
+    """
+    if img_h <= 0:
+        return 0.0
+    center_distance = _clamp(abs(2.0 * metrics["center_xy"][1] / img_h - 1.0), 0.0, 1.0)
+    return float(metrics["area"]) * (1.0 + vertical_center_weight * (1.0 - center_distance))
+
+
 def _rank_car_candidates_xyxy(
     boxes_xyxy: Sequence[Sequence[float]],
     confs: Sequence[float],
     img_w: int,
     img_h: int,
+    vertical_center_weight: float = DEFAULT_VERTICAL_CENTER_WEIGHT,
 ) -> List[Tuple[int, float]]:
     """Rank YOLO car detections by likely main-car priority.
 
     Inputs are parallel sequences of YOLO `xyxy` boxes and confidence values,
     plus the source image size used to measure wrapped and non-wrapped box area.
 
-    Returns `(box_index, area_score)` pairs sorted descending. Visible area is
-    the primary ranking signal; confidence only breaks exact area ties.
+    Returns `(box_index, priority_score)` pairs sorted descending. Visible area
+    receives a bounded vertical-center bonus; confidence only breaks score ties.
     """
     ranked = []
     for i, (x1, y1, x2, y2) in enumerate(boxes_xyxy):
@@ -80,7 +100,7 @@ def _rank_car_candidates_xyxy(
             img_w,
             img_h,
         )
-        ranked.append((i, float(metrics["area"])))
+        ranked.append((i, _main_car_score(metrics, img_h, vertical_center_weight)))
 
     return sorted(
         ranked,
@@ -94,13 +114,14 @@ def _pick_main_car_xyxy(
     confs: Sequence[float],
     img_w: int,
     img_h: int,
+    vertical_center_weight: float = DEFAULT_VERTICAL_CENTER_WEIGHT,
 ) -> Tuple[int, float]:
     """Return the top-ranked car index and its confidence.
 
     Inputs match `_rank_car_candidates_xyxy`. The output is the selected index
     into the original YOLO box array and that box's confidence value.
     """
-    ranked = _rank_car_candidates_xyxy(boxes_xyxy, confs, img_w, img_h)
+    ranked = _rank_car_candidates_xyxy(boxes_xyxy, confs, img_w, img_h, vertical_center_weight)
     best_i = ranked[0][0]
     return best_i, float(confs[best_i])
 
@@ -310,20 +331,33 @@ def _select_verified_rolled_candidate(
     img_w: int,
     img_h: int,
     shift: int,
+    *,
+    main_candidate: Optional[Dict[str, Any]] = None,
+    vertical_center_weight: float = DEFAULT_VERTICAL_CENTER_WEIGHT,
 ) -> Optional[Dict[str, Any]]:
     """Pick the best rolled-pass detection that confirms a seam-wrapped car.
 
     Inputs are candidate payloads from the rolled inference pass, first-pass
     seam-edge candidates, source image size, and the horizontal roll shift. Each
     rolled bbox is mapped back to original coordinates, kept only if it becomes
-    `wraps_x=True`, then scored against the first-pass edge candidates.
+    `wraps_x=True`, then checked against the first-pass edge candidates. Verified
+    cars compete using the same area and vertical-center score as the first pass.
+    When supplied, `main_candidate` is the best first-pass car and is replaced
+    only by a verified car with a higher score (or confidence on a score tie).
 
     Returns a compact detection payload with `bbox_xyxy`, `confidence`, and
     `wraps_x=True` for the best verified wrapped car. Returns `None` when no
-    rolled candidate confirms the first-pass edge evidence.
+    rolled candidate confirms the first-pass edge evidence and outranks the
+    optional first-pass main candidate. Exact score/confidence ties keep it.
     """
     best_payload = None
-    best_score: Optional[Tuple[int, float, float, float]] = None
+    best_score: Optional[Tuple[float, float]] = None
+    if main_candidate is not None:
+        main_metrics = _bbox_metrics(*main_candidate["bbox_xyxy"], img_w, img_h)
+        best_score = (
+            _main_car_score(main_metrics, img_h, vertical_center_weight),
+            float(main_candidate["confidence"]),
+        )
 
     for rolled_candidate in rolled_candidates:
         mapped_bbox = _map_rolled_bbox_to_original(
@@ -344,11 +378,8 @@ def _select_verified_rolled_candidate(
         if match is None:
             continue
 
-        matched_count, match_score = match
         score = (
-            matched_count,
-            match_score,
-            mapped_metrics["area"],
+            _main_car_score(mapped_metrics, img_h, vertical_center_weight),
             float(rolled_candidate["confidence"]),
         )
         if best_score is None or score > best_score:
